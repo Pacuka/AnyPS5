@@ -53,6 +53,8 @@ struct QueueState {
     std::uint32_t indexType = 0;
     std::uint32_t instanceCount = 1;
     std::vector<std::string> markers;
+    std::uint32_t predicationControl = 0;
+    std::uint64_t predicationAddress = 0;
 
     void ClearContext() {
         context = InitialContextRegisters();

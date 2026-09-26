@@ -130,9 +130,9 @@ std::string_view UnsupportedReason(std::uint32_t header) {
         case 0x81: case 0x83: case 0x9f: return {};
         case 0x24: case 0x25: case 0x27: case 0x2c: case 0x38: case 0x3a: case 0x8d:
             return "graphics draw, shader stages and guest render-target materialization are not implemented";
-        case 0x20: return "GPU query predication is not implemented";
+        case 0x20: case 0x3f: return {};
         case 0x22: return "conditional command execution and conditional flip reservation are not implemented";
-        case 0x33: case 0x3f: return "nested command buffers, branching and nested flip reservation are not implemented";
+        case 0x33: return "constant-engine command buffers are not implemented";
         case 0x3c: case 0x93: return {};
         case 0x39: case 0x59:
             return "cooperative command-queue waits are not implemented";
@@ -187,8 +187,8 @@ void Validate(std::span<const std::uint32_t> packet, std::uint32_t queue) {
         return;
     }
     // Header bit 1 selects the compute shader type and bit 2 (register writes) resets the filter CAM;
-    // neither changes what the packet writes. Predication (bit 0) is not implemented.
-    const auto flags = header & 0xffu;
+    // neither changes what the packet writes. Bit 0 subjects the packet to SET_PREDICATION.
+    const auto flags = header & 0xffu & ~1u;
     const bool registerWrite = opcode == 0x69 || opcode == 0x76 || opcode == 0x79 || opcode == 0x7a;
     auto allowedFlags = opcode == 0x11 ? 2u : registerWrite ? 6u : opcode == 0x3c || opcode == 0x93 ? 2u : 0u;
     if (IsTagMarker(packet)) allowedFlags |= 1u;
@@ -269,6 +269,19 @@ void Validate(std::span<const std::uint32_t> packet, std::uint32_t queue) {
             require(packet.size() - 2 <= 0x10000u - offset, "register range overflow");
             break;
         }
+        case 0x20: {
+            size(4);
+            require((packet[1] & ~0x80071100u) == 0, "SET_PREDICATION reserved fields are not implemented");
+            const auto operation = (packet[1] >> 16u) & 7u;
+            require(operation == 0 || operation == 3 || operation == 4, "occlusion and primitive-count predication are not implemented");
+            if (operation != 0) require((packet[2] & (operation == 3 ? 7u : 3u)) == 0 && packet[3] <= 0xffffu && (packet[2] != 0 || packet[3] != 0), "invalid SET_PREDICATION address");
+            break;
+        }
+        case 0x3f:
+            size(4);
+            require((packet[3] & ~0x309fffffu) == 0 && (packet[3] & 0x00900000u) == 0x00900000u, "only valid chained INDIRECT_BUFFER jumps are implemented");
+            require((packet[3] & 0xfffffu) != 0 && (packet[1] & 3u) == 0 && packet[2] <= 0xffffu, "invalid INDIRECT_BUFFER target");
+            break;
         case 0x3c: case 0x93: {
             size(opcode == 0x3c ? 7 : 9);
             require((packet[1] & 0x10u) != 0, "register-space WAIT_REG_MEM is not implemented");
@@ -354,6 +367,15 @@ bool WaitSatisfied(std::span<const std::uint32_t> packet) {
     const GuestMemory::ReadSiteScope site(GuestMemory::ReadSite::Wait);
     GuestMemory::Read(source, std::as_writable_bytes(std::span(&value, 1)).first(wide ? 8 : 4), wide ? 8 : 4);
     return waitCompares(packet, wide, value);
+}
+
+bool PredicatePasses(std::uint32_t header, const QueueState& queue) {
+    const auto operation = (queue.predicationControl >> 16u) & 7u;
+    if ((header & 1u) == 0 || ((header >> 8u) & 0xffu) == 0x10 || operation == 0) return true;
+    const auto bytes = operation == 3 ? 8u : 4u;
+    GuestMemory::CheckRange(reinterpret_cast<const void*>(queue.predicationAddress), bytes, bytes);
+    const std::uint64_t value = operation == 3 ? *reinterpret_cast<const volatile std::uint64_t*>(queue.predicationAddress) : *reinterpret_cast<const volatile std::uint32_t*>(queue.predicationAddress);
+    return ((queue.predicationControl & 0x100u) != 0) == (value != 0);
 }
 
 bool WaitSatisfiedUnchecked(std::span<const std::uint32_t> packet) {
@@ -522,6 +544,10 @@ void Execute(std::span<const std::uint32_t> packet, QueueState& queue) {
         case 0x26: queue.indexBase = address(packet[1], packet[2]); return;
         case 0x2a: queue.indexType = packet[1]; return;
         case 0x2f: queue.instanceCount = packet[1]; return;
+        case 0x20:
+            queue.predicationControl = packet[1];
+            queue.predicationAddress = address(packet[2], packet[3]);
+            return;
         case 0x63: case 0x64: case 0x9f: {
             std::vector<std::uint32_t> pairs(static_cast<std::size_t>(packet[4]) * 2);
             // Named for the [hooksync] attribution (the read goes through the flush hook).

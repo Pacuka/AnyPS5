@@ -18,14 +18,15 @@ void* APS5_VABI sceAgcDcbA_zARR5aCmkoY(void) {
 }
 
 
-uint32_t* APS5_VABI sceAgcDcbJump(CommandBuffer* buf, uint8_t mode, uint8_t cache_policy, const uint32_t* target, uint32_t size_in_dwords) {
- (void)buf;
- (void)mode;
- (void)cache_policy;
- (void)target;
- (void)size_in_dwords;
- NotImplemented_nid_no_patch(__func__);
- return nullptr;
+// A chained INDIRECT_BUFFER: execution continues in the target and does not return.
+std::uint32_t* APS5_VABI sceAgcDcbJump(CommandBuffer* buf, std::uint8_t mode, std::uint8_t cache_policy, const std::uint32_t* target, std::uint32_t size_in_dwords) {
+    Agc::Command::Require(mode == 0, __func__, "jump modes other than 0 are not implemented");
+    Agc::Command::CheckBits(cache_policy, 3, __func__);
+    const auto guestAddress = reinterpret_cast<std::uintptr_t>(target);
+    if (guestAddress != 0) Agc::Command::CheckAddress(guestAddress, 4, __func__);
+    Agc::Command::CheckBits(guestAddress, 0xffffffffffffull, __func__);
+    Agc::Command::CheckBits(size_in_dwords, 0xfffffu, __func__);
+    return Agc::Command::Emit(buf, 0x3fu, {static_cast<std::uint32_t>(guestAddress), static_cast<std::uint32_t>(guestAddress >> 32u), size_in_dwords | 0x00900000u | (static_cast<std::uint32_t>(cache_policy) << 28u)}, __func__);
 }
 
 std::uint32_t APS5_VABI sceAgcDcbJumpGetSize() {

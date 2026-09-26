@@ -92,6 +92,10 @@ struct Submission {
     std::vector<std::uint32_t> commands;
     std::map<std::uint64_t, std::shared_ptr<const ShaderSnapshot>> shaders;
     std::map<std::size_t, std::shared_ptr<IFlipRequest>> flips;
+    // Chained INDIRECT_BUFFER targets are copied behind the submitted commands: jump packet offset
+    // to target offset, and the end of every command segment by its start.
+    std::map<std::size_t, std::size_t> jumps;
+    std::map<std::size_t, std::size_t> segments;
     bool suspend = false;
     // Record-order stamp (Driver::eventSerial) taken when the game submitted: a WAIT_REG_MEM of this
     // submission trusts only labels the recorder noted with a newer stamp (see Recorder::NoteLabel).
@@ -307,6 +311,7 @@ public:
             GuestMemory::CheckRange(descriptor.addr, static_cast<std::size_t>(descriptor.dw_num) * sizeof(std::uint32_t), alignof(std::uint32_t));
             submission.commands.assign(descriptor.addr, descriptor.addr + descriptor.dw_num);
         }
+        appendJumpTargets(submission);
         validate(submission.commands, queue, descriptor.addr);
         static const bool trace = std::getenv("APS5_TRACE_GPU") != nullptr;
         if (trace) std::fprintf(stderr, "[gpu] %.1f submit queue=0x%x dwords=%zu at %p\n", TraceMs(), queue, submission.commands.size(), static_cast<const void*>(descriptor.addr));
@@ -645,6 +650,44 @@ private:
             std::fclose(file);
             std::fprintf(stderr, "[gpu] rejected submission written to %s\n", fileName);
         }
+    }
+
+    static void appendJumpTargets(Submission& submission) {
+        auto& commands = submission.commands;
+        submission.segments.emplace(0, commands.size());
+        std::map<std::pair<std::uint64_t, std::uint32_t>, std::size_t> targets;
+        for (std::size_t cursor = 0; cursor < commands.size();) {
+            const auto header = commands[cursor];
+            if (Pm4::FillerPacket(header)) { ++cursor; continue; }
+            if ((header & 0xc0000000u) != 0xc0000000u) break;
+            const auto count = Pm4::PacketWords(header);
+            if (count > commands.size() - cursor) break;
+            if (((header >> 8u) & 0xffu) == 0x3f && count == 4) {
+                const auto target = commands[cursor + 1] | (static_cast<std::uint64_t>(commands[cursor + 2]) << 32u);
+                const auto dwords = commands[cursor + 3] & 0xfffffu;
+                auto [found, inserted] = targets.try_emplace({target, dwords}, commands.size());
+                if (inserted) {
+                    require(commands.size() + dwords <= (1u << 26u), "chained command buffers exceed the submission limit");
+                    GuestMemory::CheckRange(reinterpret_cast<const void*>(target), static_cast<std::size_t>(dwords) * sizeof(std::uint32_t), alignof(std::uint32_t));
+                    const auto* words = reinterpret_cast<const std::uint32_t*>(target);
+                    const auto start = commands.size();
+                    commands.insert(commands.end(), words, words + dwords);
+                    submission.segments.emplace(start, commands.size());
+                }
+                submission.jumps.emplace(cursor, found->second);
+            }
+            cursor += count;
+        }
+    }
+
+    // Stores this queue's deferred labels and waits for the GPU, so a predicate label written by
+    // earlier packets is visible to the CPU.
+    void drainForPredicate(std::uint32_t queue) {
+        GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Flush);
+        std::lock_guard gpuLock(GuestMemory::GpuMutex());
+        const auto localDevice = device.load();
+        recordDeferredLabels(localDevice.get(), queue);
+        if (localDevice != nullptr) localDevice->WaitIdle();
     }
 
     static void validate(std::span<const std::uint32_t> commands, std::uint32_t queue, const std::uint32_t* guest = nullptr) {
@@ -2074,7 +2117,8 @@ private:
         // of this worker starts over here); inside it only the ordering points below do, unless
         // APS5_PACKET_EPOCH=1 restores an epoch per packet.
         bumpEpoch(&EpochBumps::submissions);
-        for (std::size_t cursor = 0; cursor < submission.commands.size();) {
+        auto segmentEnd = submission.segments.empty() ? submission.commands.size() : submission.segments.begin()->second;
+        for (std::size_t cursor = 0; cursor < segmentEnd;) {
             if (PacketEpoch()) bumpEpoch(&EpochBumps::packets);
             CheckFailure();
             const auto header = submission.commands[cursor];
@@ -2082,6 +2126,23 @@ private:
             const auto count = Pm4::PacketWords(header);
             const auto packet = std::span(submission.commands).subspan(cursor, count);
             const auto opcode = (header >> 8u) & 0xffu;
+            if ((header & 1u) != 0 && opcode != 0x10 && ((queue.predicationControl >> 16u) & 7u) != 0 && !Pm4::IsTagMarker(packet)) {
+                drainForPredicate(submission.queue);
+                if (!Pm4::PredicatePasses(header, queue)) {
+                    cursor += count;
+                    continue;
+                }
+            }
+            if (opcode == 0x20) {
+                Pm4::Execute(packet, queue);
+                cursor += count;
+                continue;
+            }
+            if (opcode == 0x3f) {
+                cursor = submission.jumps.at(cursor);
+                segmentEnd = submission.segments.at(cursor);
+                continue;
+            }
             // Names this packet for the flush hook's sync attribution ([hooksync]); the flip is 0xffff.
             GuestMemory::SetCurrentPacket(header == FlipPacketHeader ? 0xffffu : opcode, submission.queue);
             // Pending labels and full batches go to the GPU before this packet's own work starts

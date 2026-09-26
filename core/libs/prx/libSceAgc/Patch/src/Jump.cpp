@@ -10,11 +10,15 @@
 extern "C" {
 
 int APS5_VABI sceAgcJumpPatchSetTarget(uint32_t* cmd, const volatile uint32_t* target, uint32_t size_in_dwords) {
- (void)cmd;
- (void)target;
- (void)size_in_dwords;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+    Agc::Command::ValidatePacket(cmd, 0x3fu, 4, __func__);
+    const auto guestAddress = reinterpret_cast<std::uintptr_t>(target);
+    Agc::Command::CheckAddress(guestAddress, 4, __func__);
+    Agc::Command::CheckBits(guestAddress, 0xffffffffffffull, __func__);
+    Agc::Command::CheckBits(size_in_dwords, 0xfffffu, __func__);
+    cmd[1] = static_cast<std::uint32_t>(guestAddress);
+    cmd[2] = static_cast<std::uint32_t>(guestAddress >> 32u);
+    cmd[3] = (cmd[3] & ~0xfffffu) | size_in_dwords;
+    return 0;
 }
 
 }

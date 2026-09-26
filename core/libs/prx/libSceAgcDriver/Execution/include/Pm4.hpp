@@ -39,6 +39,7 @@ bool IsTagMarker(std::span<const std::uint32_t> packet);
 bool WaitSatisfied(std::span<const std::uint32_t> packet);
 // WaitSatisfied for a polling loop: the caller has validated the address once, so the value is read
 // directly instead of through the checked guest memory path.
+bool PredicatePasses(std::uint32_t header, const QueueState& queue);
 bool WaitSatisfiedUnchecked(std::span<const std::uint32_t> packet);
 // Whether a WAIT_REG_MEM's compare holds for `value` (the 4 or 8 bytes a label the recorder still
 // holds will store), without reading memory.
