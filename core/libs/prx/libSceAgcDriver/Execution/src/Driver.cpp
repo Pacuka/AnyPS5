@@ -41,6 +41,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -92,8 +93,8 @@ struct Submission {
     std::vector<std::uint32_t> commands;
     std::map<std::uint64_t, std::shared_ptr<const ShaderSnapshot>> shaders;
     std::map<std::size_t, std::shared_ptr<IFlipRequest>> flips;
-    // Chained INDIRECT_BUFFER targets are copied behind the submitted commands: jump packet offset
-    // to target offset, and the end of every command segment by its start.
+    // INDIRECT_BUFFER targets are copied behind the submitted commands: jump packet offset to target
+    // offset, and the end of every command segment by its start.
     std::map<std::size_t, std::size_t> jumps;
     std::map<std::size_t, std::size_t> segments;
     bool suspend = false;
@@ -680,8 +681,8 @@ private:
         }
     }
 
-    // Stores this queue's deferred labels and waits for the GPU, so a predicate label written by
-    // earlier packets is visible to the CPU.
+    // Stores this queue's deferred labels and waits for the GPU, so labels written by earlier
+    // packets are visible to the CPU.
     void drainForPredicate(std::uint32_t queue) {
         GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Flush);
         std::lock_guard gpuLock(GuestMemory::GpuMutex());
@@ -2118,7 +2119,15 @@ private:
         // APS5_PACKET_EPOCH=1 restores an epoch per packet.
         bumpEpoch(&EpochBumps::submissions);
         auto segmentEnd = submission.segments.empty() ? submission.commands.size() : submission.segments.begin()->second;
-        for (std::size_t cursor = 0; cursor < segmentEnd;) {
+        // Return points of the INDIRECT_BUFFER calls in progress (a chained one does not return).
+        std::vector<std::pair<std::size_t, std::size_t>> returns;
+        for (std::size_t cursor = 0;;) {
+            if (cursor >= segmentEnd) {
+                if (returns.empty()) break;
+                std::tie(cursor, segmentEnd) = returns.back();
+                returns.pop_back();
+                continue;
+            }
             if (PacketEpoch()) bumpEpoch(&EpochBumps::packets);
             CheckFailure();
             const auto header = submission.commands[cursor];
@@ -2139,6 +2148,10 @@ private:
                 continue;
             }
             if (opcode == 0x3f) {
+                if ((packet[3] & 0x00100000u) == 0) {
+                    require(returns.size() < 64, "INDIRECT_BUFFER calls nest too deeply");
+                    returns.emplace_back(cursor + count, segmentEnd);
+                }
                 cursor = submission.jumps.at(cursor);
                 segmentEnd = submission.segments.at(cursor);
                 continue;
@@ -2449,7 +2462,7 @@ private:
                 }); });
             } else if (opcode != 0x42 && opcode != 0x46 && opcode != 0x58) {
                 if (!wroteOnGpu) Pm4::Execute(packet, queue);
-                if (interruptRelease) Eq::TriggerEndOfPipe(packet[7]);
+                if (interruptRelease) Eq::TriggerEndOfPipe(submission.queue, packet[7]);
             }
             if (drawPacket) Graphics::Recorder::CountRecordedWork();
             cursor += count;
@@ -2522,6 +2535,12 @@ private:
                     pending.pop_front();
                 }
                 execute(submission);
+                if (submission.queue != 0 && !submission.suspend) {
+                    // Compute rings raise an end-of-pipe interrupt when a submission retires; titles
+                    // poll their compute fences from it, so the submission's labels land first.
+                    drainForPredicate(submission.queue);
+                    Eq::TriggerEndOfPipe(submission.queue, 0);
+                }
                 if (traceGpu) std::fprintf(stderr, "[gpu] %.1f done serial=%llu queue=0x%x\n", TraceMs(), static_cast<unsigned long long>(submission.serial), id);
                 {
                     std::lock_guard lock(mutex);

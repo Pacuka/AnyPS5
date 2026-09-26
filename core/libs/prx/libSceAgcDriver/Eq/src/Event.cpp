@@ -22,9 +22,10 @@ std::vector<std::pair<KernelEqueue, int>> registrations;
 
 namespace AgcDriver::Eq {
 
-void TriggerEndOfPipe(std::uint32_t contextId) {
+void TriggerEndOfPipe(std::uint32_t queue, std::uint32_t contextId) {
     std::lock_guard lock(registrationMutex);
     for (const auto& [eq, id] : registrations) {
+        if (static_cast<std::uint32_t>(id) != queue) continue;
         EqueueTriggerEvent_nid_postfix(eq, static_cast<uintptr_t>(id), EVFILT_GRAPHICS_CORE, reinterpret_cast<void*>(static_cast<uintptr_t>(contextId)));
     }
 }

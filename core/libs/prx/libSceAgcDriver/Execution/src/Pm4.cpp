@@ -280,7 +280,7 @@ void Validate(std::span<const std::uint32_t> packet, std::uint32_t queue) {
         }
         case 0x3f:
             size(4);
-            require((packet[3] & ~0x309fffffu) == 0 && (packet[3] & 0x00900000u) == 0x00900000u, "only valid chained INDIRECT_BUFFER jumps are implemented");
+            require((packet[3] & ~0x309fffffu) == 0 && (packet[3] & 0x00800000u) != 0, "INDIRECT_BUFFER reserved fields or invalid buffer");
             require((packet[3] & 0xfffffu) != 0 && (packet[1] & 3u) == 0 && packet[2] <= 0xffffu, "invalid INDIRECT_BUFFER target");
             break;
         case 0x3c: case 0x93: {
