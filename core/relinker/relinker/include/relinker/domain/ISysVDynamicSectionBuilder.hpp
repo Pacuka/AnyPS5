@@ -13,6 +13,7 @@ public:
     virtual SysVDynamicSection BuildDynamicSection(
         const std::vector<NidReference>& nidReferences,
         const std::vector<std::string>& neededLibraries,
+        const std::vector<ExportedSymbol>& exportedSymbols,
         FileByteOffset originalJmprelOffset,
         std::uint32_t originalJmprelCount
     ) = 0;

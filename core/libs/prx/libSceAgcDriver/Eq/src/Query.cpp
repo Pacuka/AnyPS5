@@ -11,9 +11,10 @@
 extern "C" {
 
 uint32_t APS5_VABI sceAgcDriverGetEqContextId(const KernelEvent* ev) {
- (void)ev;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+    if (ev == nullptr || reinterpret_cast<std::uintptr_t>(ev) % alignof(KernelEvent) != 0 || ev->filter != -14) {
+        throw std::runtime_error(std::string(__func__) + ": null, misaligned or non-graphics event");
+    }
+    return static_cast<std::uint32_t>(ev->data);
 }
 
 int APS5_VABI sceAgcDriverGetEqEventType(const KernelEvent* ev) {

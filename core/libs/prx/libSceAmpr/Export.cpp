@@ -214,9 +214,14 @@ int APS5_VABI sceAmprCommandBufferWriteCounter_04_00() {
  return 0;
 }
 
-int APS5_VABI sceAmprCommandBufferWriteKernelEventQueue_04_00() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
+int APS5_VABI sceAmprCommandBufferWriteKernelEventQueue_04_00(Apr::CommandBufferObject* buffer, KernelEqueue queue, int32_t id, uint64_t data, uint32_t flags) {
+    Apr::WriteKernelEventQueueCommand command{};
+    command.header = {Apr::Opcode::WriteKernelEventQueue, sizeof(command)};
+    command.id = id;
+    command.flags = flags;
+    command.queue = queue;
+    command.data = data;
+    return Append(buffer, &command, sizeof(command));
 }
 
 int APS5_VABI sceAmprMeasureCommandSizeMapBegin() {
@@ -327,9 +332,8 @@ int APS5_VABI sceAmprMeasureCommandSizeWriteCounter_04_00() {
  return 0;
 }
 
-int APS5_VABI sceAmprMeasureCommandSizeWriteKernelEventQueue_04_00() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
+uint32_t APS5_VABI sceAmprMeasureCommandSizeWriteKernelEventQueue_04_00(void) {
+    return sizeof(Apr::WriteKernelEventQueueCommand);
 }
 
 }

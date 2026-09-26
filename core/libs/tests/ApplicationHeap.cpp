@@ -47,6 +47,16 @@ void* APS5_VABI reallocate(void* pointer, std::size_t bytes) {
     return allocate(bytes);
 }
 
+void* APS5_VABI reallocateAligned(void* pointer, std::size_t bytes, std::size_t alignment) {
+    lastAlignment = alignment;
+    return reallocate(pointer, bytes);
+}
+
+std::size_t APS5_VABI usableSize(void* pointer) {
+    require(pointer == storage.data());
+    return lastSize;
+}
+
 void* APS5_VABI allocateZeroed(std::size_t count, std::size_t bytes) {
     return allocate(count * bytes);
 }
@@ -90,8 +100,9 @@ int main(int argc, char**) {
     write(replacement, 0x30, &allocateZeroed);
     write(replacement, 0x38, &reallocate);
     write(replacement, 0x40, &align);
-    write(replacement, 0x48, &reallocate);
+    write(replacement, 0x48, &reallocateAligned);
     write(replacement, 0x50, &posixAlign);
+    write(replacement, 0x68, &usableSize);
     if (argc > 1) {
         write(replacement, 8, std::uint64_t{99});
         reject([&] { ApplicationHeapInitialize_nid_no_patch(process.data()); });
@@ -114,6 +125,8 @@ int main(int argc, char**) {
     ApplicationHeapFree_nid_no_patch(pointer);
     require(frees == 2);
     require(ApplicationHeapCalloc_nid_no_patch(3, 16) == storage.data() && lastSize == 48);
+    require(ApplicationHeapUsableSize_nid_no_patch(storage.data()) == 48);
+    require(ApplicationHeapReallocAlign_nid_no_patch(storage.data(), 80, 16) == storage.data() && lastSize == 80 && lastAlignment == 16);
     require(ApplicationHeapPosixAlign_nid_no_patch(&pointer, 64, 128) == 0 && pointer == storage.data() && lastAlignment == 64);
     reject([] { ApplicationHeapAlign_nid_no_patch(3, 64); });
     reject([] { ApplicationHeapCalloc_nid_no_patch(2, std::numeric_limits<std::size_t>::max()); });

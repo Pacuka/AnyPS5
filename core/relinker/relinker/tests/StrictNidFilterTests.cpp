@@ -263,7 +263,7 @@ void filterAndPltCompaction() {
     std::memcpy(&newIndex, input.Text.data() + 23, sizeof(newIndex));
     require(newIndex == 0 && input.Text[0] == 0x0F && input.Text[1] == 0x0B && input.Text[6] == 0x0F && input.Text[7] == 0x0B, "PLT thunk index or removed thunk traps are incorrect");
     Relinker::SysVDynamicSectionBuilder builder;
-    const auto section = builder.BuildDynamicSection(compacted.References, {}, 0x300, compacted.SlotCount);
+    const auto section = builder.BuildDynamicSection(compacted.References, {}, {}, 0x300, compacted.SlotCount);
     require(section.RelaPltData.size() == 24 && section.DynSymData.size() == 48, "Compacted PLT retained a dead dynamic symbol");
     auto truncated = bytes;
     truncated.resize(70);

@@ -58,9 +58,41 @@ void SysVDynamicSectionBuilder::_appendRela(
     _appendI64(rela, addend);
 }
 
+std::uint32_t SysVDynamicSectionBuilder::_elfHash(const std::string& name) {
+    std::uint32_t h = 0;
+    for (const unsigned char c : name) {
+        h = (h << 4) + c;
+        const std::uint32_t g = h & 0xf0000000u;
+        if (g != 0) h ^= g >> 24;
+        h &= ~g;
+    }
+    return h;
+}
+
+void SysVDynamicSectionBuilder::_buildHashTable(SysVDynamicSection& section, const std::vector<std::string>& symbolNames) const {
+    const auto chainCount = static_cast<std::uint32_t>(symbolNames.size());
+    const std::uint32_t bucketCount = chainCount / 2u + 1u;
+    std::vector<std::uint32_t> buckets(bucketCount, 0u);
+    std::vector<std::uint32_t> chains(chainCount, 0u);
+    for (std::uint32_t index = 1; index < chainCount; ++index) {
+        const std::uint32_t bucket = _elfHash(symbolNames[index]) % bucketCount;
+        chains[index] = buckets[bucket];
+        buckets[bucket] = index;
+    }
+    auto appendU32 = [&](std::uint32_t v) {
+        for (int shift = 0; shift < 32; shift += 8)
+            section.HashData.push_back(static_cast<std::uint8_t>((v >> shift) & 0xFF));
+    };
+    appendU32(bucketCount);
+    appendU32(chainCount);
+    for (const std::uint32_t v : buckets) appendU32(v);
+    for (const std::uint32_t v : chains) appendU32(v);
+}
+
 SysVDynamicSection SysVDynamicSectionBuilder::BuildDynamicSection(
     const std::vector<NidReference>& nidReferences,
     const std::vector<std::string>& neededLibraries,
+    const std::vector<ExportedSymbol>& exportedSymbols,
     FileByteOffset originalJmprelOffset,
     std::uint32_t originalJmprelCount)
 {
@@ -72,6 +104,7 @@ SysVDynamicSection SysVDynamicSectionBuilder::BuildDynamicSection(
         neededOffsets.push_back(_appendStr(result.DynStrData, lib));
 
     _appendElfSym(result.DynSymData, 0, 0, 0, 0, 0, 0);
+    std::vector<std::string> symbolNames{std::string()};
 
     auto stripHashSuffix = [](const std::string& value) -> std::string {
         const auto hashPos = value.find('#');
@@ -127,7 +160,8 @@ SysVDynamicSection SysVDynamicSectionBuilder::BuildDynamicSection(
                 "PLT thunks cannot be filtered without patching their hard-coded reloc index");
 
         const NidReference& ref = *slot;
-        const std::uint32_t nameOff = _appendStr(result.DynStrData, stripHashSuffix(ref.Nid));
+        symbolNames.push_back(stripHashSuffix(ref.Nid));
+        const std::uint32_t nameOff = _appendStr(result.DynStrData, symbolNames.back());
         const auto info = static_cast<std::uint8_t>((STB_GLOBAL << 4) | STT_FUNC);
         _appendElfSym(result.DynSymData, nameOff, info, STV_DEFAULT, 0, 0, 0);
 
@@ -138,7 +172,8 @@ SysVDynamicSection SysVDynamicSectionBuilder::BuildDynamicSection(
 
     for (const NidReference* slotPtr : nonPltRefs) {
         const NidReference& ref = *slotPtr;
-        const std::uint32_t nameOff = _appendStr(result.DynStrData, stripHashSuffix(ref.Nid));
+        symbolNames.push_back(stripHashSuffix(ref.Nid));
+        const std::uint32_t nameOff = _appendStr(result.DynStrData, symbolNames.back());
         const auto info = static_cast<std::uint8_t>((STB_GLOBAL << 4) | STT_FUNC);
         _appendElfSym(result.DynSymData, nameOff, info, STV_DEFAULT, 0, 0, 0);
 
@@ -146,6 +181,15 @@ SysVDynamicSection SysVDynamicSectionBuilder::BuildDynamicSection(
         _appendRela(result.RelaData, ref.RelocationAddress, relaInfo, ref.Addend);
         ++symIdx;
     }
+
+    for (const auto& symbol : exportedSymbols) {
+        symbolNames.push_back(stripHashSuffix(symbol.Nid));
+        const std::uint32_t nameOff = _appendStr(result.DynStrData, symbolNames.back());
+        _appendElfSym(result.DynSymData, nameOff, symbol.Info, STV_DEFAULT, kExportSectionIndex, symbol.Value, symbol.Size);
+    }
+
+    if (!exportedSymbols.empty())
+        _buildHashTable(result, symbolNames);
 
     for (const std::uint32_t off : neededOffsets)
         _appendDynEntry(result.DynamicSegmentData, DT_NEEDED, off);

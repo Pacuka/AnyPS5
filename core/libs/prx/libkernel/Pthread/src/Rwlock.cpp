@@ -1,112 +1,130 @@
 #include "../include/Pthread.hpp"
 #include "prx/libc/include/General.hpp"
-#include <chrono>
-#include <stdexcept>
+#include <new>
 
-static constexpr int SCE_OK = 0;
-static constexpr int SCE_KERNEL_ERROR_ENOMEM = 0x8002000C;
-static constexpr int SCE_KERNEL_ERROR_EDEADLK = 0x8002000B;
-static constexpr int SCE_KERNEL_ERROR_EBUSY = 0x80020010;
-static constexpr int SCE_KERNEL_ERROR_ETIMEDOUT = 0x8002003C;
+namespace PthreadSync {
 
-static PthreadRwlockPrivate* RequireRwlock(PthreadRwlock* rwlock, const char* funcName) {
-    if (!rwlock || !*rwlock) throw std::runtime_error(std::string(funcName) + ": null rwlock");
-    return *rwlock;
+namespace {
+
+PthreadRwlockPrivate* Resolve(PthreadRwlock* rwlock) {
+    if (!rwlock) return nullptr;
+    auto& slot = *reinterpret_cast<std::atomic<PthreadRwlockPrivate*>*>(rwlock);
+    auto* current = slot.load(std::memory_order_acquire);
+    if (current) return current;
+    auto* created = new PthreadRwlockPrivate();
+    if (slot.compare_exchange_strong(current, created, std::memory_order_acq_rel)) return created;
+    delete created;
+    return current;
 }
 
-static bool OwnsWrite(const PthreadRwlockPrivate* lock) {
-    return lock->_writer.load(std::memory_order_acquire) == std::this_thread::get_id();
 }
+
+int RwlockInit_nid_no_patch(PthreadRwlock* rwlock) {
+    if (!rwlock) return kEINVAL;
+    auto* created = new (std::nothrow) PthreadRwlockPrivate();
+    if (!created) return kENOMEM;
+    *rwlock = created;
+    return 0;
+}
+
+int RwlockDestroy_nid_no_patch(PthreadRwlock* rwlock) {
+    if (!rwlock) return kEINVAL;
+    delete *rwlock;
+    *rwlock = nullptr;
+    return 0;
+}
+
+int RwlockRead_nid_no_patch(PthreadRwlock* rwlock, bool tryOnly, const Deadline* deadline) {
+    auto* lock = Resolve(rwlock);
+    if (!lock) return kEINVAL;
+    if (lock->_writer.load(std::memory_order_acquire) == std::this_thread::get_id()) return kEDEADLK;
+    if (tryOnly) return lock->_lock.try_lock_shared() ? 0 : kEBUSY;
+    if (deadline) return lock->_lock.try_lock_shared_until(*deadline) ? 0 : kETIMEDOUT;
+    lock->_lock.lock_shared();
+    return 0;
+}
+
+int RwlockWrite_nid_no_patch(PthreadRwlock* rwlock, bool tryOnly, const Deadline* deadline) {
+    auto* lock = Resolve(rwlock);
+    if (!lock) return kEINVAL;
+    if (lock->_writer.load(std::memory_order_acquire) == std::this_thread::get_id()) return kEDEADLK;
+    if (tryOnly) {
+        if (!lock->_lock.try_lock()) return kEBUSY;
+    } else if (deadline) {
+        if (!lock->_lock.try_lock_until(*deadline)) return kETIMEDOUT;
+    } else {
+        lock->_lock.lock();
+    }
+    lock->_writer.store(std::this_thread::get_id(), std::memory_order_release);
+    return 0;
+}
+
+int RwlockUnlock_nid_no_patch(PthreadRwlock* rwlock) {
+    if (!rwlock || !*rwlock) return kEINVAL;
+    auto* lock = *rwlock;
+    if (lock->_writer.load(std::memory_order_acquire) == std::this_thread::get_id()) {
+        lock->_writer.store(std::thread::id{}, std::memory_order_release);
+        lock->_lock.unlock();
+        return 0;
+    }
+    lock->_lock.unlock_shared();
+    return 0;
+}
+
+}
+
+using namespace PthreadSync;
 
 extern "C" {
 
-int APS5_VABI scePthreadRwlockDestroy(PthreadRwlock* rwlock) {
-    delete RequireRwlock(rwlock, __func__);
-    *rwlock = nullptr;
-    return SCE_OK;
+int APS5_VABI scePthreadRwlockInit(PthreadRwlock* rwlock, const PthreadRwlockattr*, const char*) {
+    return ToSce(RwlockInit_nid_no_patch(rwlock));
 }
 
-int APS5_VABI scePthreadRwlockInit(PthreadRwlock* rwlock, const PthreadRwlockattr* attr, const char* name) {
-    (void)attr;
-    (void)name;
-    if (!rwlock) throw std::runtime_error("scePthreadRwlockInit: null rwlock");
-    auto* p = new (std::nothrow) PthreadRwlockPrivate();
-    if (!p) return SCE_KERNEL_ERROR_ENOMEM;
-    *rwlock = p;
-    return SCE_OK;
+int APS5_VABI scePthreadRwlockDestroy(PthreadRwlock* rwlock) {
+    return ToSce(RwlockDestroy_nid_no_patch(rwlock));
 }
 
 int APS5_VABI scePthreadRwlockRdlock(PthreadRwlock* rwlock) {
-    auto* lock = RequireRwlock(rwlock, __func__);
-    if (OwnsWrite(lock)) return SCE_KERNEL_ERROR_EDEADLK;
-    lock->_lock.lock_shared();
-    return SCE_OK;
+    return ToSce(RwlockRead_nid_no_patch(rwlock, false, nullptr));
 }
 
 int APS5_VABI scePthreadRwlockTryrdlock(PthreadRwlock* rwlock) {
-    auto* lock = RequireRwlock(rwlock, __func__);
-    return lock->_lock.try_lock_shared() ? SCE_OK : SCE_KERNEL_ERROR_EBUSY;
-}
-
-int APS5_VABI scePthreadRwlockTimedrdlock(PthreadRwlock* rwlock, KernelUseconds usec) {
-    auto* lock = RequireRwlock(rwlock, __func__);
-    if (OwnsWrite(lock)) return SCE_KERNEL_ERROR_EDEADLK;
-    return lock->_lock.try_lock_shared_for(std::chrono::microseconds(usec)) ? SCE_OK : SCE_KERNEL_ERROR_ETIMEDOUT;
+    return ToSce(RwlockRead_nid_no_patch(rwlock, true, nullptr));
 }
 
 int APS5_VABI scePthreadRwlockWrlock(PthreadRwlock* rwlock) {
-    auto* lock = RequireRwlock(rwlock, __func__);
-    if (OwnsWrite(lock)) return SCE_KERNEL_ERROR_EDEADLK;
-    lock->_lock.lock();
-    lock->_writer.store(std::this_thread::get_id(), std::memory_order_release);
-    return SCE_OK;
+    return ToSce(RwlockWrite_nid_no_patch(rwlock, false, nullptr));
 }
 
 int APS5_VABI scePthreadRwlockTrywrlock(PthreadRwlock* rwlock) {
-    auto* lock = RequireRwlock(rwlock, __func__);
-    if (!lock->_lock.try_lock()) return SCE_KERNEL_ERROR_EBUSY;
-    lock->_writer.store(std::this_thread::get_id(), std::memory_order_release);
-    return SCE_OK;
-}
-
-int APS5_VABI scePthreadRwlockTimedwrlock(PthreadRwlock* rwlock, KernelUseconds usec) {
-    auto* lock = RequireRwlock(rwlock, __func__);
-    if (OwnsWrite(lock)) return SCE_KERNEL_ERROR_EDEADLK;
-    if (!lock->_lock.try_lock_for(std::chrono::microseconds(usec))) return SCE_KERNEL_ERROR_ETIMEDOUT;
-    lock->_writer.store(std::this_thread::get_id(), std::memory_order_release);
-    return SCE_OK;
+    return ToSce(RwlockWrite_nid_no_patch(rwlock, true, nullptr));
 }
 
 int APS5_VABI scePthreadRwlockUnlock(PthreadRwlock* rwlock) {
-    auto* lock = RequireRwlock(rwlock, __func__);
-    if (OwnsWrite(lock)) {
-        lock->_writer.store(std::thread::id{}, std::memory_order_release);
-        lock->_lock.unlock();
-    } else {
-        lock->_lock.unlock_shared();
-    }
-    return SCE_OK;
-}
-
-int APS5_VABI scePthreadRwlockattrDestroy(PthreadRwlockattr* attr) {
-    if (!attr || !*attr) throw std::runtime_error("scePthreadRwlockattrDestroy: null attr");
-    delete *attr;
-    *attr = nullptr;
-    return SCE_OK;
+    return ToSce(RwlockUnlock_nid_no_patch(rwlock));
 }
 
 int APS5_VABI scePthreadRwlockattrInit(PthreadRwlockattr* attr) {
-    if (!attr) throw std::runtime_error("scePthreadRwlockattrInit: null attr");
-    auto* p = new (std::nothrow) PthreadRwlockattrPrivate{0};
-    if (!p) return SCE_KERNEL_ERROR_ENOMEM;
+    if (!attr) return ToSce(kEINVAL);
+    auto* p = new (std::nothrow) PthreadRwlockattrPrivate{};
+    if (!p) return ToSce(kENOMEM);
     *attr = p;
-    return SCE_OK;
+    return 0;
+}
+
+int APS5_VABI scePthreadRwlockattrDestroy(PthreadRwlockattr* attr) {
+    if (!attr || !*attr) return ToSce(kEINVAL);
+    delete *attr;
+    *attr = nullptr;
+    return 0;
 }
 
 int APS5_VABI scePthreadRwlockattrSettype(PthreadRwlockattr* attr, int type) {
-    if (!attr || !*attr) throw std::runtime_error("scePthreadRwlockattrSettype: null attr");
+    if (!attr || !*attr) return ToSce(kEINVAL);
     (*attr)->type = type;
-    return SCE_OK;
+    return 0;
 }
+
 
 }

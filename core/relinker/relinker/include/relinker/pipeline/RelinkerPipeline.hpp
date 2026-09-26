@@ -41,6 +41,7 @@ private:
     static constexpr std::int64_t DT_RELAENT = 0x00000009;
     static constexpr std::int64_t DT_STRSZ = 0x0000000a;
     static constexpr std::int64_t DT_SYMENT = 0x0000000b;
+    static constexpr std::int64_t DT_INIT = 0x0000000c;
     static constexpr std::int64_t DT_PLTREL = 0x00000014;
     static constexpr std::int64_t DT_JMPREL = 0x00000017;
 

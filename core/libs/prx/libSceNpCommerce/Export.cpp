@@ -66,3 +66,37 @@ int APS5_VABI sceNpCommerceDialogTerminate() {
 }
 
 }
+
+extern "C" {
+
+int APS5_VABI sceNpCommerceDialogGetResult_nid_postfix() {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
+}
+
+int APS5_VABI sceNpCommerceDialogInitialize_nid_postfix() {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
+}
+
+int APS5_VABI sceNpCommerceDialogOpen_nid_postfix() {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
+}
+
+int APS5_VABI sceNpCommerceDialogTerminate_nid_postfix() {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
+}
+
+int APS5_VABI sceNpCommerceHidePsStoreIcon_nid_postfix() {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
+}
+
+int APS5_VABI sceNpCommerceShowPsStoreIcon_nid_postfix() {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
+}
+
+}

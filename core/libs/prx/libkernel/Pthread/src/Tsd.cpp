@@ -1,90 +1,132 @@
 #include "../include/Pthread.hpp"
 #include "prx/libc/include/General.hpp"
 #include <array>
-#include <mutex>
-#include <stdexcept>
 
-static constexpr int SCE_OK = 0;
-static constexpr int SCE_KERNEL_ERROR_EINVAL = 0x80020016;
-static constexpr int SCE_KERNEL_ERROR_EAGAIN = 0x80020023;
-static constexpr int MAX_KEYS = 512;
-static constexpr int DESTRUCTOR_ITERATIONS = 4;
+namespace PthreadSync {
 
-using GuestKeyDestructor = void (APS5_VABI*)(void*);
+namespace {
+
+constexpr int kKeyCount = 256;
+constexpr int kDestructorIterations = 4;
+constexpr int kOnceNeverDone = 0;
+constexpr int kOnceDone = 1;
+constexpr int kOnceInProgress = 2;
 
 struct KeySlot {
     bool used = false;
-    GuestKeyDestructor destructor = nullptr;
+    pthread_key_destructor_func_t destructor = nullptr;
 };
 
-static std::mutex g_keyLock;
-static std::array<KeySlot, MAX_KEYS> g_keys;
-
-struct ThreadValues {
-    std::array<void*, MAX_KEYS> values{};
-
-    ~ThreadValues() {
-        for (int round = 0; round < DESTRUCTOR_ITERATIONS; ++round) {
-            bool called = false;
-            for (int key = 0; key < MAX_KEYS; ++key) {
-                void* value = values[key];
-                if (!value) continue;
-                GuestKeyDestructor destructor;
-                {
-                    std::lock_guard lock(g_keyLock);
-                    destructor = g_keys[key].used ? g_keys[key].destructor : nullptr;
-                }
-                values[key] = nullptr;
-                if (destructor) {
-                    destructor(value);
-                    called = true;
-                }
-            }
-            if (!called) return;
-        }
-    }
-};
-
-static thread_local ThreadValues g_values;
-
-static bool IsValidKey(PthreadKey key) {
-    if (key < 0 || key >= MAX_KEYS) return false;
-    std::lock_guard lock(g_keyLock);
-    return g_keys[key].used;
+std::mutex& KeyMutex() {
+    static std::mutex value;
+    return value;
 }
+
+std::array<KeySlot, kKeyCount>& Keys() {
+    static std::array<KeySlot, kKeyCount> value{};
+    return value;
+}
+
+thread_local std::array<void*, kKeyCount> values{};
+
+bool IsValidKey(PthreadKey key) {
+    return key > 0 && key < kKeyCount;
+}
+
+}
+
+int KeyCreate_nid_no_patch(PthreadKey* key, pthread_key_destructor_func_t destructor) {
+    if (!key) return kEINVAL;
+    std::lock_guard lock(KeyMutex());
+    auto& keys = Keys();
+    for (int index = 1; index < kKeyCount; ++index) {
+        if (keys[index].used) continue;
+        keys[index] = {true, destructor};
+        *key = index;
+        return 0;
+    }
+    return kEAGAIN;
+}
+
+int KeyDelete_nid_no_patch(PthreadKey key) {
+    if (!IsValidKey(key)) return kEINVAL;
+    std::lock_guard lock(KeyMutex());
+    auto& slot = Keys()[key];
+    if (!slot.used) return kEINVAL;
+    slot = {};
+    return 0;
+}
+
+void* GetSpecific_nid_no_patch(PthreadKey key) {
+    if (!IsValidKey(key)) return nullptr;
+    return values[key];
+}
+
+int SetSpecific_nid_no_patch(PthreadKey key, const void* value) {
+    if (!IsValidKey(key)) return kEINVAL;
+    values[key] = const_cast<void*>(value);
+    return 0;
+}
+
+void RunKeyDestructors_nid_no_patch() {
+    for (int iteration = 0; iteration < kDestructorIterations; ++iteration) {
+        bool called = false;
+        for (int index = 1; index < kKeyCount; ++index) {
+            void* value = values[index];
+            if (!value) continue;
+            pthread_key_destructor_func_t destructor = nullptr;
+            {
+                std::lock_guard lock(KeyMutex());
+                if (Keys()[index].used) destructor = Keys()[index].destructor;
+            }
+            values[index] = nullptr;
+            if (!destructor) continue;
+            destructor(value);
+            called = true;
+        }
+        if (!called) return;
+    }
+}
+
+int Once_nid_no_patch(int* state, void (APS5_VABI *routine)()) {
+    if (!state || !routine) return kEINVAL;
+    auto& atomicState = *reinterpret_cast<std::atomic<int>*>(state);
+    for (;;) {
+        int current = atomicState.load(std::memory_order_acquire);
+        if (current == kOnceDone) return 0;
+        if (current == kOnceNeverDone && atomicState.compare_exchange_strong(current, kOnceInProgress, std::memory_order_acq_rel)) {
+            routine();
+            atomicState.store(kOnceDone, std::memory_order_release);
+            return 0;
+        }
+        std::this_thread::yield();
+    }
+}
+
+}
+
+using namespace PthreadSync;
 
 extern "C" {
 
 int APS5_VABI scePthreadKeyCreate(PthreadKey* key, pthread_key_destructor_func_t destructor) {
-    if (!key) throw std::runtime_error("scePthreadKeyCreate: null key");
-    std::lock_guard lock(g_keyLock);
-    for (int index = 0; index < MAX_KEYS; ++index) {
-        if (!g_keys[index].used) {
-            g_keys[index] = {true, reinterpret_cast<GuestKeyDestructor>(destructor)};
-            *key = index;
-            return SCE_OK;
-        }
-    }
-    return SCE_KERNEL_ERROR_EAGAIN;
+    return ToSce(KeyCreate_nid_no_patch(key, destructor));
 }
 
 int APS5_VABI scePthreadKeyDelete(PthreadKey key) {
-    if (key < 0 || key >= MAX_KEYS) return SCE_KERNEL_ERROR_EINVAL;
-    std::lock_guard lock(g_keyLock);
-    if (!g_keys[key].used) return SCE_KERNEL_ERROR_EINVAL;
-    g_keys[key] = {};
-    return SCE_OK;
+    return ToSce(KeyDelete_nid_no_patch(key));
 }
 
 void* APS5_VABI scePthreadGetspecific(PthreadKey key) {
-    if (key < 0 || key >= MAX_KEYS) return nullptr;
-    return g_values.values[key];
+    return GetSpecific_nid_no_patch(key);
 }
 
 int APS5_VABI scePthreadSetspecific(PthreadKey key, void* value) {
-    if (!IsValidKey(key)) return SCE_KERNEL_ERROR_EINVAL;
-    g_values.values[key] = value;
-    return SCE_OK;
+    return ToSce(SetSpecific_nid_no_patch(key, value));
+}
+
+int APS5_VABI scePthreadOnce(int* once, void (APS5_VABI *routine)()) {
+    return ToSce(Once_nid_no_patch(once, routine));
 }
 
 }

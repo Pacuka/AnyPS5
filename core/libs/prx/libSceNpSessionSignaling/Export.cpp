@@ -46,3 +46,42 @@ int APS5_VABI sceNpSessionSignalingTerminate(void) {
 }
 
 }
+
+extern "C" {
+
+int APS5_VABI sceNpSessionSignalingActivateSession_nid_postfix() {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
+}
+
+int APS5_VABI sceNpSessionSignalingCreateContext2_nid_postfix() {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
+}
+
+int APS5_VABI sceNpSessionSignalingDeactivate_nid_postfix() {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
+}
+
+int APS5_VABI sceNpSessionSignalingDestroyContext_nid_postfix() {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
+}
+
+int APS5_VABI sceNpSessionSignalingGetConnectionInfo_nid_postfix() {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
+}
+
+int APS5_VABI sceNpSessionSignalingGetConnectionStatus_nid_postfix() {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
+}
+
+int APS5_VABI sceNpSessionSignalingTerminate_nid_postfix() {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
+}
+
+}

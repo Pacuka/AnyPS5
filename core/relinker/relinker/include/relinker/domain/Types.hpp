@@ -14,6 +14,7 @@ using SectionHeader = Domain::SectionHeader;
 using NidReference = Domain::NidReference;
 using CallSiteInfo = Domain::CallSiteInfo;
 using SymbolExport = Domain::SymbolExport;
+using ExportedSymbol = Domain::ExportedSymbol;
 using DynamicTag = Domain::DynamicTag;
 using RelinkerException = Domain::RelinkerException;
 using SysVDynamicSection = Domain::SysVDynamicSection;

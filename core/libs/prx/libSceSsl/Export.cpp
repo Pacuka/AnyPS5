@@ -1,48 +1,47 @@
+#include <atomic>
 #include <cstdint>
 #include <cstddef>
+#include <cstring>
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
-#include <atomic>
 
-// No network is emulated: contexts, templates and requests can be created, but any request
-// that would touch the network fails with the library's network error.
-static constexpr int ERROR_NETWORK = static_cast<int>(0x80435001);
-static std::atomic<int> g_nextHandle{1};
+// The console is offline, so SSL contexts exist but carry no system CA certificates.
+
+namespace {
+
+constexpr int SCE_SSL_ERROR_INVALID_VALUE = static_cast<int>(0x8095F007);
+
+struct SslCaCerts {
+    void* certData;
+    std::uint64_t certDataNum;
+    void* pool;
+};
+
+std::atomic<int> nextContextId{1};
+
+}
 
 extern "C" {
 
-int APS5_VABI sceSslFreeCaCerts(int ssl_ctx_id, void* ca_certs) {
- (void)ssl_ctx_id;
- (void)ca_certs;
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI sceSslGetCaCerts(int ssl_ctx_id, void* ca_certs) {
- (void)ssl_ctx_id;
- (void)ca_certs;
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
 int APS5_VABI sceSslInit_nid_postfix(uint64_t pool_size) {
-    (void)pool_size;
-    return g_nextHandle.fetch_add(1, std::memory_order_relaxed);
+    if (pool_size == 0) return SCE_SSL_ERROR_INVALID_VALUE;
+    return nextContextId++;
 }
 
 int APS5_VABI sceSslTerm_nid_postfix(int ssl_ctx_id) {
-    (void)ssl_ctx_id;
+    return ssl_ctx_id > 0 ? 0 : SCE_SSL_ERROR_INVALID_VALUE;
+}
+
+int APS5_VABI sceSslGetCaCerts(int ssl_ctx_id, void* ca_certs) {
+    if (ssl_ctx_id <= 0 || !ca_certs) return SCE_SSL_ERROR_INVALID_VALUE;
+    const SslCaCerts empty{};
+    std::memcpy(ca_certs, &empty, sizeof(empty));
     return 0;
 }
 
-int APS5_VABI sceSslClose() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI sceSslGetSerialNumber() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
+int APS5_VABI sceSslFreeCaCerts(int ssl_ctx_id, void* ca_certs) {
+    if (ssl_ctx_id <= 0 || !ca_certs) return SCE_SSL_ERROR_INVALID_VALUE;
+    return 0;
 }
 
 }

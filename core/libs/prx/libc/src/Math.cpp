@@ -85,4 +85,18 @@ void APS5_VABI srand_nid_postfix(unsigned int seed) {
     g_randState = seed;
 }
 
+
+float APS5_VABI logbf_nid_postfix(float x) { return std::logb(x); }
+double APS5_VABI exp2_nid_postfix(double x) { return std::exp2(x); }
+double APS5_VABI hypot_nid_postfix(double x, double y) { return std::hypot(x, y); }
+// Compiler runtime helper with the repeated-multiplication semantics of compiler-rt.
+float APS5_VABI __powisf2_nid_postfix(float base, int exponent) {
+    const bool reciprocal = exponent < 0;
+    float result = 1.0f;
+    for (long long remaining = exponent; remaining != 0; remaining /= 2) {
+        if (remaining & 1) result *= base;
+        base *= base;
+    }
+    return reciprocal ? 1.0f / result : result;
+}
 }

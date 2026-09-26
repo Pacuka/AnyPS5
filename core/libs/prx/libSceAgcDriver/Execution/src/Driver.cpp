@@ -1,4 +1,5 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver.hpp"
+#include "prx/libSceAgcDriver/Eq/include/Event.hpp"
 #include "prx/libSceAgcDriver/Execution/include/PerformanceTimer.hpp"
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
 #include "prx/libSceAgcDriver/Execution/include/ShaderMemory.hpp"
@@ -2132,7 +2133,10 @@ private:
             // Labels that store nothing (RELEASE_MEM without data select or destination:
             // interrupt-only) need no drain because Pm4::Execute is a no-op for them. The label
             // counters and the [sync] report live at namespace scope (see reportSync).
-            if (!drainAll && (opcode == 0x49 || opcode == 0x37)) {
+            // A release that raises an end-of-pipe interrupt stores its label synchronously after a
+            // drain, so the guest's interrupt handler sees the label and all earlier work completed.
+            const bool interruptRelease = opcode == 0x49 && ((packet[2] >> 24u) & 7u) != 0;
+            if (!drainAll && !interruptRelease && (opcode == 0x49 || opcode == 0x37)) {
                 if (const auto label = Pm4::DecodeLabelWrite(packet)) {
                     const auto bytes = label->Bytes();
                     if (DeferLabels() && bytes.size() <= DeferredLabel::Capacity && bytes.size() % 4 == 0 && label->address % 4 == 0) {
@@ -2384,6 +2388,7 @@ private:
                 }); });
             } else if (opcode != 0x42 && opcode != 0x46 && opcode != 0x58) {
                 if (!wroteOnGpu) Pm4::Execute(packet, queue);
+                if (interruptRelease) Eq::TriggerEndOfPipe(packet[7]);
             }
             if (drawPacket) Graphics::Recorder::CountRecordedWork();
             cursor += count;

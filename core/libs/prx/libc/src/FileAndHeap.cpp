@@ -6,10 +6,17 @@
 #include <filesystem>
 #include <limits>
 #include <utility>
+#include <string>
+#include <cstdarg>
 
+#include "SceTypes.hpp"
 #include "prx/libc/include/FileStream.hpp"
 #include "prx/libc/include/ApplicationHeap.hpp"
 #include "prx/libc/include/General.hpp"
+
+#ifdef _WIN32
+#include "prx/libc/include/WindowsFormatting.hpp"
+#endif
 
 extern "C" {
 
@@ -92,6 +99,46 @@ int APS5_VABI fflush_nid_postfix(FileStream* stream) {
     return 0;
 }
 
+int APS5_VABI setvbuf_nid_postfix(FileStream* stream, char* buffer, int mode, size_t size) {
+    // Guest buffering modes use the FreeBSD values _IOFBF 0, _IOLBF 1 and _IONBF 2.
+    static constexpr int hostModes[] = {_IOFBF, _IOLBF, _IONBF};
+    if (mode < 0 || mode > 2) throw std::invalid_argument("setvbuf: invalid buffering mode");
+    if (std::setvbuf(GetNativeStream(stream), buffer, hostModes[mode], size) != 0) throw std::runtime_error("setvbuf: buffering change failed");
+    return 0;
+}
+
+int APS5_VABI vfprintf_nid_postfix(FileStream* stream, const char* format, VaList* args) {
+    auto* handle = GetNativeStream(stream);
+    if (!format || !args) throw std::invalid_argument("vfprintf: null argument");
+#ifdef _WIN32
+    std::string text;
+    const int result = LibcDetail::FormatWindows(nullptr, 0, format, args, &text);
+    if (std::fwrite(text.data(), 1, text.size(), handle) != text.size()) throw std::runtime_error("vfprintf: write failed");
+#else
+    const int result = std::vfprintf(handle, format, *reinterpret_cast<std::va_list*>(args));
+    if (result < 0) throw std::runtime_error("vfprintf: write failed");
+#endif
+    return result;
+}
+
+#ifdef _WIN32
+int APS5_VABI fprintf_nid_postfix(FileStream* stream, const char* format, ...) {
+    __builtin_sysv_va_list args;
+    __builtin_sysv_va_start(args, format);
+    const int result = vfprintf_nid_postfix(stream, format, reinterpret_cast<VaList*>(&args));
+    __builtin_sysv_va_end(args);
+    return result;
+}
+#else
+int APS5_VABI fprintf_nid_postfix(FileStream* stream, const char* format, ...) {
+    std::va_list args;
+    va_start(args, format);
+    const int result = vfprintf_nid_postfix(stream, format, reinterpret_cast<VaList*>(&args));
+    va_end(args);
+    return result;
+}
+#endif
+
 void* APS5_VABI malloc_nid_postfix(size_t size) {
     return ApplicationHeapAllocate_nid_no_patch(size);
 }
@@ -106,6 +153,18 @@ void* APS5_VABI realloc_nid_postfix(void* ptr, size_t newSize) {
 
 void* APS5_VABI memalign_nid_postfix(size_t alignment, size_t size) {
     return ApplicationHeapAlign_nid_no_patch(alignment, size);
+}
+
+void* APS5_VABI reallocalign_nid_postfix(void* ptr, size_t size, size_t alignment) {
+    return ApplicationHeapReallocAlign_nid_no_patch(ptr, size, alignment);
+}
+
+size_t APS5_VABI malloc_usable_size_nid_postfix(void* ptr) {
+    return ApplicationHeapUsableSize_nid_no_patch(ptr);
+}
+
+void APS5_VABI _ZdlPv_nid_postfix(void* ptr) {
+    ApplicationHeapFree_nid_no_patch(ptr);
 }
 
 void* APS5_VABI calloc_nid_postfix(size_t count, size_t size) {

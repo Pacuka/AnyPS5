@@ -1,5 +1,6 @@
 #include "prx/libkernel/File/include/NativeStat.hpp"
 
+#include <cerrno>
 #include <stdexcept>
 #include <string>
 
@@ -26,24 +27,9 @@ static int DoFstat(int fd, NativeStat* st) {
 
 namespace File {
 
-static void FillFromNative(const NativeStat& st, FileStat* sb);
+namespace {
 
-void FillFileStat(const std::filesystem::path& nativePath, FileStat* sb) {
-    NativeStat st{};
-    if (DoStat(nativePath, &st) != 0) {
-        throw std::runtime_error(std::string("FillFileStat: stat failed for ") + nativePath.string());
-    }
-    FillFromNative(st, sb);
-}
-
-bool FillFileStatFromDescriptor(int fd, FileStat* sb) {
-    NativeStat st{};
-    if (DoFstat(fd, &st) != 0) return false;
-    FillFromNative(st, sb);
-    return true;
-}
-
-static void FillFromNative(const NativeStat& st, FileStat* sb) {
+void Convert(const NativeStat& st, FileStat* sb) {
     *sb = FileStat{};
     sb->st_mode = static_cast<std::uint16_t>(st.st_mode);
     sb->st_size = static_cast<std::int64_t>(st.st_size);
@@ -92,3 +78,20 @@ static void FillFromNative(const NativeStat& st, FileStat* sb) {
 }
 
 }
+
+int FillFileStat(const std::filesystem::path& nativePath, FileStat* sb) {
+    NativeStat st{};
+    if (DoStat(nativePath, &st) != 0) return errno;
+    Convert(st, sb);
+    return 0;
+}
+
+int FillFileStat(int fd, FileStat* sb) {
+    NativeStat st{};
+    if (DoFstat(fd, &st) != 0) return errno;
+    Convert(st, sb);
+    return 0;
+}
+
+}
+

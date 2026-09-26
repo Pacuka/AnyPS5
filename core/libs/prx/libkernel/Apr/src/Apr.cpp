@@ -3,6 +3,7 @@
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
 #include "prx/libkernel/Apr/include/AprCommandBuffer.hpp"
+#include "prx/libkernel/Equeue/Equeue.hpp"
 #include <atomic>
 #include <cerrno>
 #include <cstdio>
@@ -23,6 +24,7 @@ namespace {
 
 constexpr int GUEST_ENOENT = 2;
 constexpr int GUEST_EINVAL = 22;
+constexpr int GUEST_EFAULT = 14;
 
 struct AprFile {
     std::filesystem::path path;
@@ -153,6 +155,12 @@ void _execute(const Apr::CommandBufferObject& buffer) {
             _writeAddress(command);
             break;
         }
+        case Apr::Opcode::WriteKernelEventQueue: {
+            Apr::WriteKernelEventQueueCommand command;
+            std::memcpy(&command, buffer.base + cursor, sizeof(command));
+            EqueueTriggerEvent_nid_postfix(command.queue, static_cast<std::uintptr_t>(command.id), EVFILT_USER, reinterpret_cast<void*>(command.data));
+            break;
+        }
         default:
             throw std::runtime_error("APR: unknown opcode " + std::to_string(static_cast<std::uint32_t>(header.opcode)));
         }
@@ -190,6 +198,30 @@ int APS5_VABI sceKernelAprSubmitCommandBuffer(const Apr::CommandBufferObject* bu
     (void)priority;
     if (!buffer || buffer->type != Apr::BufferType::Apr) return _fail(GUEST_EINVAL);
     _execute(*buffer);
+    return 0;
+}
+
+struct AprSubmissionResult {
+    std::int32_t error;
+    std::uint32_t commandBufferOffset;
+};
+
+// Commands execute synchronously, so every submission has completed by the time it returns.
+static std::atomic<std::uint32_t> g_lastSubmission{0};
+
+int APS5_VABI sceKernelAprSubmitCommandBufferAndGetResult(const Apr::CommandBufferObject* buffer, uint32_t priority, AprSubmissionResult* result, uint32_t* submissionId) {
+    (void)priority;
+    if (!buffer || !result || !submissionId) return _fail(GUEST_EFAULT);
+    if (buffer->type != Apr::BufferType::Apr) return _fail(GUEST_EINVAL);
+    _execute(*buffer);
+    result->error = 0;
+    result->commandBufferOffset = 0;
+    *submissionId = ++g_lastSubmission;
+    return 0;
+}
+
+int APS5_VABI sceKernelAprWaitCommandBuffer(uint32_t submissionId) {
+    if (submissionId == 0 || submissionId > g_lastSubmission.load()) return _fail(GUEST_EINVAL);
     return 0;
 }
 

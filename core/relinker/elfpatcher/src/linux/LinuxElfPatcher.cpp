@@ -2,6 +2,7 @@
 #include <elfpatcher/general/ElfConstants.hpp>
 #include <elfpatcher/general/ProgramHeaderLayoutRequest.hpp>
 #include <elfpatcher/general/SectionHeaderTableRequest.hpp>
+#include <cstdint>
 #include <string>
 
 namespace Elfpatcher::Linux {
@@ -79,6 +80,11 @@ std::vector<std::uint8_t> LinuxElfPatcher::Patch(
         buf.push_back(b);
     alignBuf(buf, kRelaPltAlignment);
 
+    const auto hashOff = static_cast<std::uint64_t>(buf.size());
+    for (std::uint8_t b : dynSection.HashData)
+        buf.push_back(b);
+    alignBuf(buf, kRelaPltAlignment);
+
     const std::uint64_t extraBlockOff = dynStrOff;
     const std::uint64_t extraBlockVaddr = _programHeaderLayoutBuilder->ComputeExtraBlockVaddr(originalHeaders, extraBlockOff);
 
@@ -106,9 +112,29 @@ std::vector<std::uint8_t> LinuxElfPatcher::Patch(
         _appendDynEntry(dynSegBuf, DT_PLTREL, static_cast<std::uint64_t>(DT_RELA));
         _appendDynEntry(dynSegBuf, DT_PLTGOT, originalPltGotVaddr);
     }
+    if (!dynSection.HashData.empty())
+        _appendDynEntry(dynSegBuf, DT_HASH, vaddrOfExtraBlockOffset(hashOff));
     if (!lazyBinding)
         _appendDynEntry(dynSegBuf, DT_FLAGS, DF_BIND_NOW);
     _appendDynEntry(dynSegBuf, DT_RUNPATH, runPathStrOff);
+    _appendDynEntry(dynSegBuf, DT_DEBUG, 0);
+
+    std::uint64_t initStubVaddr = 0;
+    if (dynSection.InitAddress != 0) {
+        initStubVaddr = vaddrOfExtraBlockOffset(static_cast<std::uint64_t>(buf.size()));
+        static constexpr std::uint8_t kClearInitArguments[] = {0x31, 0xFF, 0x31, 0xF6, 0x31, 0xD2, 0xE9};
+        for (const std::uint8_t b : kClearInitArguments)
+            buf.push_back(b);
+        const auto jumpDisplacement = static_cast<std::int64_t>(dynSection.InitAddress) - static_cast<std::int64_t>(initStubVaddr + sizeof(kClearInitArguments) + 4);
+        if (jumpDisplacement < INT32_MIN || jumpDisplacement > INT32_MAX)
+            throw Domain::RelinkerException("DT_INIT target is out of rel32 range");
+        const auto displacement = static_cast<std::uint32_t>(static_cast<std::int32_t>(jumpDisplacement));
+        for (int shift = 0; shift < 32; shift += 8)
+            buf.push_back(static_cast<std::uint8_t>((displacement >> shift) & 0xFF));
+        alignBuf(buf, kRelaPltAlignment);
+        _appendDynEntry(dynSegBuf, DT_INIT, initStubVaddr);
+    }
+
     _appendDynEntry(dynSegBuf, DT_NULL, 0);
 
     const auto dynSegOff = static_cast<std::uint64_t>(buf.size());

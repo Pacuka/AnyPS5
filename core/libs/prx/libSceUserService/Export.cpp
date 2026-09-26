@@ -1,45 +1,45 @@
 #include <cstddef>
+#include <cstring>
 #include <cstdint>
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
-#include <atomic>
 #include "prx/libSceUserService/UserService.hpp"
 
 extern "C" {
 
 int APS5_VABI sceUserServiceGetAccessibilityChatTranscription(int user_id, int32_t* chat_transcription) {
- (void)user_id;
- (void)chat_transcription;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+ if (user_id != USER_SERVICE_INITIAL_USER_ID || chat_transcription == nullptr) return USER_SERVICE_ERROR_INVALID_ARGUMENT;
+ // Accessibility options are left at their system defaults (disabled).
+ *chat_transcription = 0;
+ return USER_SERVICE_OK;
 }
 
 int APS5_VABI sceUserServiceGetAccessibilityPressAndHoldDelay(int user_id, int32_t* press_and_hold_delay) {
- (void)user_id;
- (void)press_and_hold_delay;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+ if (user_id != USER_SERVICE_INITIAL_USER_ID || press_and_hold_delay == nullptr) return USER_SERVICE_ERROR_INVALID_ARGUMENT;
+ // Accessibility options are left at their system defaults (disabled).
+ *press_and_hold_delay = 0;
+ return USER_SERVICE_OK;
 }
 
 int APS5_VABI sceUserServiceGetAccessibilityTriggerEffect(int user_id, int32_t* trigger_effect) {
- (void)user_id;
- (void)trigger_effect;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+ if (user_id != USER_SERVICE_INITIAL_USER_ID || trigger_effect == nullptr) return USER_SERVICE_ERROR_INVALID_ARGUMENT;
+ // Accessibility options are left at their system defaults (disabled).
+ *trigger_effect = 0;
+ return USER_SERVICE_OK;
 }
 
 int APS5_VABI sceUserServiceGetAccessibilityVibration(int user_id, int32_t* vibration) {
- (void)user_id;
- (void)vibration;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+ if (user_id != USER_SERVICE_INITIAL_USER_ID || vibration == nullptr) return USER_SERVICE_ERROR_INVALID_ARGUMENT;
+ // Accessibility options are left at their system defaults (disabled).
+ *vibration = 0;
+ return USER_SERVICE_OK;
 }
 
 int APS5_VABI sceUserServiceGetAccessibilityZoomEnabled(int user_id, int32_t* zoom_enabled) {
- (void)user_id;
- (void)zoom_enabled;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+ if (user_id != USER_SERVICE_INITIAL_USER_ID || zoom_enabled == nullptr) return USER_SERVICE_ERROR_INVALID_ARGUMENT;
+ // Accessibility options are left at their system defaults (disabled).
+ *zoom_enabled = 0;
+ return USER_SERVICE_OK;
 }
 
 int APS5_VABI sceUserServiceGetAgeLevel(int user_id, uint32_t* age_level) {
@@ -49,17 +49,13 @@ int APS5_VABI sceUserServiceGetAgeLevel(int user_id, uint32_t* age_level) {
  return 0;
 }
 
-// The initial user is reported as logging in once; afterwards there are no user events.
 int APS5_VABI sceUserServiceGetEvent(SceUserServiceEvent* event) {
- if (event == nullptr) {
-  return USER_SERVICE_ERROR_INVALID_ARGUMENT;
- }
- static std::atomic<bool> loginReported{false};
- if (loginReported.exchange(true)) {
-  return USER_SERVICE_ERROR_NO_EVENT;
- }
- constexpr std::uint32_t EventTypeLogin = 0;
- event->event_type = EventTypeLogin;
+ if (event == nullptr) return USER_SERVICE_ERROR_INVALID_ARGUMENT;
+ // The single local user is reported as logged in once; there are no further account changes.
+ static bool loginReported = false;
+ if (loginReported) return USER_SERVICE_ERROR_NO_EVENT;
+ loginReported = true;
+ event->event_type = USER_SERVICE_EVENT_TYPE_LOGIN;
  event->user_id = USER_SERVICE_INITIAL_USER_ID;
  return USER_SERVICE_OK;
 }
@@ -102,18 +98,17 @@ int APS5_VABI sceUserServiceGetLoginUserIdList(UserServiceLoginUserIdList* user_
 }
 
 int APS5_VABI sceUserServiceGetUserName(int user_id, char* name, size_t size) {
- (void)user_id;
- (void)name;
- (void)size;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+ if (user_id != USER_SERVICE_INITIAL_USER_ID || name == nullptr) return USER_SERVICE_ERROR_INVALID_ARGUMENT;
+ const size_t length = std::strlen(USER_SERVICE_INITIAL_USER_NAME);
+ if (size <= length) return USER_SERVICE_ERROR_BUFFER_TOO_SHORT;
+ std::memcpy(name, USER_SERVICE_INITIAL_USER_NAME, length + 1);
+ return USER_SERVICE_OK;
 }
 
 int APS5_VABI sceUserServiceGetUserNumber(int user_id, int32_t* number) {
- (void)user_id;
- (void)number;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+ if (user_id != USER_SERVICE_INITIAL_USER_ID || number == nullptr) return USER_SERVICE_ERROR_INVALID_ARGUMENT;
+ *number = 1;
+ return USER_SERVICE_OK;
 }
 
 int APS5_VABI sceUserServiceInitialize(const void* params) {
@@ -129,6 +124,7 @@ int APS5_VABI sceUserServiceTerminate(void) {
  return USER_SERVICE_OK;
 }
 
+
 // No PSN account exists, so the platform privacy setting reports the feature as not permitted.
 int APS5_VABI sceUserServiceGetPlatformPrivacyWs1(int32_t user_id, int32_t* value) {
     (void)user_id;
@@ -136,5 +132,4 @@ int APS5_VABI sceUserServiceGetPlatformPrivacyWs1(int32_t user_id, int32_t* valu
     *value = 0;
     return 0;
 }
-
 }

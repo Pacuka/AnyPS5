@@ -6,8 +6,9 @@
 
 namespace File {
 
-void FillFileStat(const std::filesystem::path& nativePath, FileStat* sb);
-bool FillFileStatFromDescriptor(int fd, FileStat* sb);
+// Fill the guest stat of a path or an open descriptor; return 0 or the host errno.
+int FillFileStat(const std::filesystem::path& nativePath, FileStat* sb);
+int FillFileStat(int fd, FileStat* sb);
 
 }
 

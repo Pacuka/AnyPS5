@@ -10,6 +10,7 @@ public:
     SysVDynamicSection BuildDynamicSection(
         const std::vector<NidReference>& nidReferences,
         const std::vector<std::string>& neededLibraries,
+        const std::vector<ExportedSymbol>& exportedSymbols,
         FileByteOffset originalJmprelOffset,
         std::uint32_t originalJmprelCount
     ) override;
@@ -19,6 +20,7 @@ private:
     static constexpr std::uint32_t STT_FUNC = 2;
     static constexpr std::uint32_t STV_DEFAULT = 0;
     static constexpr std::uint32_t R_X86_64_JUMP_SLOT = 7;
+    static constexpr std::uint16_t kExportSectionIndex = 1;
     static constexpr std::uint32_t R_X86_64_GLOB_DAT = 6;
 
     static constexpr std::int64_t DT_NEEDED = 1;
@@ -37,6 +39,8 @@ private:
     void _appendU64(std::vector<std::uint8_t>& buf, std::uint64_t v) const;
     void _appendI64(std::vector<std::uint8_t>& buf, std::int64_t v) const;
     void _appendDynEntry(std::vector<std::uint8_t>& buf, std::int64_t tag, std::uint64_t val) const;
+    static std::uint32_t _elfHash(const std::string& name);
+    void _buildHashTable(SysVDynamicSection& section, const std::vector<std::string>& symbolNames) const;
     std::uint32_t _appendStr(std::vector<std::uint8_t>& strtab, const std::string& s) const;
     void _appendElfSym(
         std::vector<std::uint8_t>& dynsym,

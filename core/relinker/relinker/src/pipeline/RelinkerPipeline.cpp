@@ -241,7 +241,31 @@ RelinkResult RelinkerPipeline::Relink(const std::vector<std::uint8_t>& sourceElf
         std::cout << "PLT compaction: " << pltCount << " -> " << compacted.SlotCount << "\n";
         pltCount = compacted.SlotCount;
     }
-    auto dynSection = _dynamicSectionBuilder->BuildDynamicSection(dynamicRefs, neededLibraries, dynJmpRelOffset, pltCount);
+    std::vector<ExportedSymbol> exportedSymbols;
+    if (hasTag(DT_OS_SYMTABSZ)) {
+        const ByteCount symTabSize = getTagValue(DT_OS_SYMTABSZ);
+        for (ByteCount off = 0; off + symEntSize <= symTabSize; off += symEntSize) {
+            const FileByteOffset pos = dynSymTabOffset + off;
+            if (pos + symEntSize > raw.size())
+                throw RelinkerException("Symbol table entry out of bounds", pos);
+            std::uint32_t nameOff = 0;
+            std::uint16_t sectionIndex = 0;
+            std::uint64_t value = 0, size = 0;
+            std::memcpy(&nameOff, raw.data() + pos, 4);
+            std::memcpy(&sectionIndex, raw.data() + pos + 6, 2);
+            std::memcpy(&value, raw.data() + pos + 8, 8);
+            std::memcpy(&size, raw.data() + pos + 16, 8);
+            if (sectionIndex == 0) continue;
+            auto name = readCStr(nameOff);
+            if (name.find('#') == std::string::npos) continue;
+            exportedSymbols.push_back({std::move(name), raw[pos + 4], value, size});
+        }
+    }
+    std::cout << "Exported symbols: " << exportedSymbols.size() << "\n";
+
+    auto dynSection = _dynamicSectionBuilder->BuildDynamicSection(dynamicRefs, neededLibraries, exportedSymbols, dynJmpRelOffset, pltCount);
+    if (hasTag(DT_INIT))
+        dynSection.InitAddress = getTagValue(DT_INIT);
 
     static constexpr std::uint32_t R_X86_64_RELATIVE = 8;
 

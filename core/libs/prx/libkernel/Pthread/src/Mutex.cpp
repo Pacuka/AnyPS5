@@ -1,138 +1,185 @@
 #include "../include/Pthread.hpp"
 #include "prx/libc/include/General.hpp"
-#include <cerrno>
 #include <chrono>
+#include <new>
 #include <stdexcept>
-#include <string>
 
-static constexpr int SCE_OK = 0;
-static constexpr int SCE_KERNEL_ERROR_ENOMEM = 0x8002000C;
-static constexpr int SCE_KERNEL_ERROR_EDEADLK = 0x8002000B;
-static constexpr int SCE_KERNEL_ERROR_EPERM = 0x80020001;
-static constexpr int SCE_KERNEL_ERROR_EBUSY = 0x80020010;
-static constexpr int SCE_KERNEL_ERROR_ETIMEDOUT = 0x8002003C;
+namespace PthreadSync {
+
+namespace {
+
+bool IsStaticInitializer(PthreadMutexPrivate* value) {
+    return value == nullptr || reinterpret_cast<std::uintptr_t>(value) == 1;
+}
+
+bool IsValidType(int type) {
+    return type >= static_cast<int>(MutexType::ErrorCheck) && type <= static_cast<int>(MutexType::Adaptive);
+}
+
+}
+
+Deadline DeadlineFromAbsolute_nid_no_patch(const KernelTimespec* abstime, int clockId) {
+    if (!abstime || abstime->tv_nsec < 0 || abstime->tv_nsec >= 1000000000) throw std::invalid_argument("invalid absolute timeout");
+    const auto target = std::chrono::seconds(abstime->tv_sec) + std::chrono::nanoseconds(abstime->tv_nsec);
+    std::chrono::nanoseconds now;
+    if (clockId == kClockMonotonic)
+        now = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch());
+    else
+        now = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch());
+    return std::chrono::steady_clock::now() + std::chrono::duration_cast<std::chrono::steady_clock::duration>(target - now);
+}
+
+Deadline DeadlineFromRelative_nid_no_patch(std::uint64_t microseconds) {
+    return std::chrono::steady_clock::now() + std::chrono::microseconds(microseconds);
+}
+
+bool IsValidMutexType_nid_no_patch(int type) {
+    return IsValidType(type);
+}
+
+PthreadMutexPrivate* MutexResolve_nid_no_patch(PthreadMutex* mutex, MutexType defaultType) {
+    if (!mutex) return nullptr;
+    auto& slot = *reinterpret_cast<std::atomic<PthreadMutexPrivate*>*>(mutex);
+    auto* current = slot.load(std::memory_order_acquire);
+    if (!IsStaticInitializer(current)) return current;
+    auto* created = new PthreadMutexPrivate();
+    created->_type = reinterpret_cast<std::uintptr_t>(current) == 1 ? MutexType::Adaptive : defaultType;
+    if (slot.compare_exchange_strong(current, created, std::memory_order_acq_rel)) return created;
+    delete created;
+    return current;
+}
+
+int MutexInit_nid_no_patch(PthreadMutex* mutex, const PthreadMutexattr* attr, MutexType defaultType) {
+    if (!mutex) return kEINVAL;
+    auto* created = new (std::nothrow) PthreadMutexPrivate();
+    if (!created) return kENOMEM;
+    created->_type = (attr && *attr) ? (*attr)->type : defaultType;
+    *mutex = created;
+    return 0;
+}
+
+int MutexDestroy_nid_no_patch(PthreadMutex* mutex) {
+    if (!mutex) return kEINVAL;
+    if (IsStaticInitializer(*mutex)) {
+        *mutex = nullptr;
+        return 0;
+    }
+    if ((*mutex)->_owner.load(std::memory_order_acquire) != std::thread::id{}) return kEBUSY;
+    delete *mutex;
+    *mutex = nullptr;
+    return 0;
+}
+
+int MutexLock_nid_no_patch(PthreadMutex* mutex, MutexType defaultType, const Deadline* deadline) {
+    auto* m = MutexResolve_nid_no_patch(mutex, defaultType);
+    if (!m) return kEINVAL;
+    const auto self = std::this_thread::get_id();
+    if (m->_owner.load(std::memory_order_acquire) == self) {
+        if (m->_type != MutexType::Recursive) return kEDEADLK;
+        ++m->_count;
+        return 0;
+    }
+    if (deadline) {
+        if (!m->_mtx.try_lock_until(*deadline)) return kETIMEDOUT;
+    } else {
+        m->_mtx.lock();
+    }
+    m->_owner.store(self, std::memory_order_release);
+    m->_count = 1;
+    return 0;
+}
+
+int MutexTrylock_nid_no_patch(PthreadMutex* mutex, MutexType defaultType) {
+    auto* m = MutexResolve_nid_no_patch(mutex, defaultType);
+    if (!m) return kEINVAL;
+    const auto self = std::this_thread::get_id();
+    if (m->_owner.load(std::memory_order_acquire) == self) {
+        if (m->_type != MutexType::Recursive) return kEBUSY;
+        ++m->_count;
+        return 0;
+    }
+    if (!m->_mtx.try_lock()) return kEBUSY;
+    m->_owner.store(self, std::memory_order_release);
+    m->_count = 1;
+    return 0;
+}
+
+int MutexUnlock_nid_no_patch(PthreadMutex* mutex) {
+    if (!mutex || IsStaticInitializer(*mutex)) return kEPERM;
+    auto* m = *mutex;
+    if (m->_owner.load(std::memory_order_acquire) != std::this_thread::get_id()) {
+        if (m->_type == MutexType::ErrorCheck || m->_type == MutexType::Recursive) return kEPERM;
+        m->_count = 1;
+    }
+    if (--m->_count > 0) return 0;
+    m->_count = 0;
+    m->_owner.store(std::thread::id{}, std::memory_order_release);
+    m->_mtx.unlock();
+    return 0;
+}
+
+}
+
+using namespace PthreadSync;
 
 extern "C" {
 
 int APS5_VABI scePthreadMutexattrInit(PthreadMutexattr* attr) {
-    if (!attr) throw std::runtime_error("scePthreadMutexattrInit: null attr");
-    auto* p = new (std::nothrow) PthreadMutexattrPrivate{MutexType::Normal};
-    if (!p) return SCE_KERNEL_ERROR_ENOMEM;
+    if (!attr) return ToSce(kEINVAL);
+    auto* p = new (std::nothrow) PthreadMutexattrPrivate{};
+    if (!p) return ToSce(kENOMEM);
     *attr = p;
-    return SCE_OK;
+    return 0;
 }
 
 int APS5_VABI scePthreadMutexattrDestroy(PthreadMutexattr* attr) {
-    if (!attr || !*attr) throw std::runtime_error("scePthreadMutexattrDestroy: null attr");
+    if (!attr || !*attr) return ToSce(kEINVAL);
     delete *attr;
     *attr = nullptr;
-    return SCE_OK;
+    return 0;
 }
 
 int APS5_VABI scePthreadMutexattrSettype(PthreadMutexattr* attr, int type) {
-    if (!attr || !*attr) throw std::runtime_error("scePthreadMutexattrSettype: null attr");
-    switch (type) {
-    case 1: (*attr)->type = MutexType::ErrorCheck; break;
-    case 2: (*attr)->type = MutexType::Recursive; break;
-    case 3: (*attr)->type = MutexType::Normal; break;
-    case 4: (*attr)->type = MutexType::Normal; break;
-    default: throw std::runtime_error("scePthreadMutexattrSettype: invalid type " + std::to_string(type));
-    }
-    return SCE_OK;
+    if (!attr || !*attr || !IsValidMutexType_nid_no_patch(type)) return ToSce(kEINVAL);
+    (*attr)->type = static_cast<MutexType>(type);
+    return 0;
 }
 
-int APS5_VABI scePthreadMutexInit(PthreadMutex* mutex, const PthreadMutexattr* attr, const char*) {
-    if (!mutex) throw std::runtime_error("scePthreadMutexInit: null mutex");
-    MutexType t = MutexType::Normal;
-    if (attr && *attr) t = (*attr)->type;
-    auto* p = new (std::nothrow) PthreadMutexPrivate();
-    if (!p) return SCE_KERNEL_ERROR_ENOMEM;
-    p->_type = t;
-    *mutex = p;
-    return SCE_OK;
-}
-
-int APS5_VABI scePthreadMutexDestroy(PthreadMutex* mutex) {
-    if (!mutex || !*mutex) throw std::runtime_error("scePthreadMutexDestroy: null mutex");
-    delete *mutex;
-    *mutex = nullptr;
-    return SCE_OK;
-}
-
-int APS5_VABI scePthreadMutexLock(PthreadMutex* mutex) {
-    if (!mutex || !*mutex) throw std::runtime_error("scePthreadMutexLock: null mutex");
-    auto* m = *mutex;
-    const auto tid = std::this_thread::get_id();
-    if (m->_type == MutexType::Recursive) {
-        m->_rmtx.lock();
-        m->_owner.store(tid, std::memory_order_relaxed);
-        ++m->_count;
-        return SCE_OK;
-    }
-    if (m->_type == MutexType::ErrorCheck) {
-        if (m->_owner.load(std::memory_order_acquire) == tid) return SCE_KERNEL_ERROR_EDEADLK;
-    }
-    m->_mtx.lock();
-    m->_owner.store(tid, std::memory_order_relaxed);
-    return SCE_OK;
-}
-
-int APS5_VABI scePthreadMutexUnlock(PthreadMutex* mutex) {
-    if (!mutex || !*mutex) throw std::runtime_error("scePthreadMutexUnlock: null mutex");
-    auto* m = *mutex;
-    if (m->_type == MutexType::ErrorCheck || m->_type == MutexType::Normal) {
-        if (m->_owner.load(std::memory_order_acquire) != std::this_thread::get_id())
-            return SCE_KERNEL_ERROR_EPERM;
-    }
-    if (m->_type == MutexType::Recursive) {
-        if (--m->_count == 0) m->_owner.store(std::thread::id{}, std::memory_order_relaxed);
-        m->_rmtx.unlock();
-        return SCE_OK;
-    }
-    m->_owner.store(std::thread::id{}, std::memory_order_relaxed);
-    m->_mtx.unlock();
-    return SCE_OK;
-}
-
-int APS5_VABI scePthreadMutexTimedlock(PthreadMutex* mutex, KernelUseconds usec) {
-    if (!mutex || !*mutex) throw std::runtime_error("scePthreadMutexTimedlock: null mutex");
-    auto* m = *mutex;
-    const auto tid = std::this_thread::get_id();
-    const auto timeout = std::chrono::microseconds(usec);
-    if (m->_type == MutexType::Recursive) {
-        if (!m->_rmtx.try_lock_for(timeout)) return SCE_KERNEL_ERROR_ETIMEDOUT;
-        m->_owner.store(tid, std::memory_order_relaxed);
-        ++m->_count;
-        return SCE_OK;
-    }
-    if (m->_type == MutexType::ErrorCheck) {
-        if (m->_owner.load(std::memory_order_acquire) == tid) return SCE_KERNEL_ERROR_EDEADLK;
-    }
-    if (!m->_mtx.try_lock_for(timeout)) return SCE_KERNEL_ERROR_ETIMEDOUT;
-    m->_owner.store(tid, std::memory_order_relaxed);
-    return SCE_OK;
-}
-
-int APS5_VABI scePthreadMutexTrylock(PthreadMutex* mutex) {
-    if (!mutex || !*mutex) throw std::runtime_error("scePthreadMutexTrylock: null mutex");
-    auto* m = *mutex;
-    const auto tid = std::this_thread::get_id();
-    if (m->_type == MutexType::Recursive) {
-        if (!m->_rmtx.try_lock()) return SCE_KERNEL_ERROR_EBUSY;
-        m->_owner.store(tid, std::memory_order_relaxed);
-        ++m->_count;
-        return SCE_OK;
-    }
-    if (!m->_mtx.try_lock()) return SCE_KERNEL_ERROR_EBUSY;
-    m->_owner.store(tid, std::memory_order_relaxed);
-    return SCE_OK;
+int APS5_VABI scePthreadMutexattrGettype(const PthreadMutexattr* attr, int* type) {
+    if (!attr || !*attr || !type) return ToSce(kEINVAL);
+    *type = static_cast<int>((*attr)->type);
+    return 0;
 }
 
 int APS5_VABI scePthreadMutexattrSetprotocol(PthreadMutexattr* attr, int protocol) {
- (void)attr;
- (void)protocol;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+    if (!attr || !*attr || protocol < 0 || protocol > 2) return ToSce(kEINVAL);
+    (*attr)->protocol = protocol;
+    return 0;
+}
+
+int APS5_VABI scePthreadMutexInit(PthreadMutex* mutex, const PthreadMutexattr* attr, const char*) {
+    return ToSce(MutexInit_nid_no_patch(mutex, attr, MutexType::ErrorCheck));
+}
+
+int APS5_VABI scePthreadMutexDestroy(PthreadMutex* mutex) {
+    return ToSce(MutexDestroy_nid_no_patch(mutex));
+}
+
+int APS5_VABI scePthreadMutexLock(PthreadMutex* mutex) {
+    return ToSce(MutexLock_nid_no_patch(mutex, MutexType::ErrorCheck, nullptr));
+}
+
+int APS5_VABI scePthreadMutexTimedlock(PthreadMutex* mutex, KernelUseconds usec) {
+    const auto deadline = DeadlineFromRelative_nid_no_patch(usec);
+    return ToSce(MutexLock_nid_no_patch(mutex, MutexType::ErrorCheck, &deadline));
+}
+
+int APS5_VABI scePthreadMutexTrylock(PthreadMutex* mutex) {
+    return ToSce(MutexTrylock_nid_no_patch(mutex, MutexType::ErrorCheck));
+}
+
+int APS5_VABI scePthreadMutexUnlock(PthreadMutex* mutex) {
+    return ToSce(MutexUnlock_nid_no_patch(mutex));
 }
 
 }

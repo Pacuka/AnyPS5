@@ -74,6 +74,13 @@ struct SymbolExport {
     CallSiteInfo CallSites;
 };
 
+struct ExportedSymbol {
+    std::string Nid;
+    std::uint8_t Info;
+    VirtualAddress Value;
+    ByteCount Size;
+};
+
 struct DynamicTag {
     std::int64_t Tag;
     std::uint64_t Value;
@@ -92,6 +99,8 @@ struct SysVDynamicSection {
     std::vector<std::uint8_t> DynStrData;
     std::vector<std::uint8_t> RelaData;
     std::vector<std::uint8_t> RelaPltData;
+    std::vector<std::uint8_t> HashData;
+    VirtualAddress InitAddress = 0;
 };
 
 struct CallRegistryEntry {

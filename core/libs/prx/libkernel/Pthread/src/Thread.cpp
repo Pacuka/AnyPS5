@@ -3,8 +3,6 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
-#include <functional>
-#include <string>
 #include <future>
 #include <memory>
 #include <stdexcept>
@@ -20,7 +18,6 @@ static constexpr int SCE_KERNEL_ERROR_EINVAL = 0x80020016;
 
 static constexpr std::size_t DEFAULT_STACK_SIZE = 1u << 20;
 static constexpr int DETACH_DETACHED = 1;
-static constexpr std::size_t THREAD_NAME_CAPACITY = 32;
 
 #ifdef _WIN32
 #include <windows.h>
@@ -43,17 +40,49 @@ static void FinishThread(PthreadPrivate* self, void* retval) {
     self->_join_cv.notify_all();
 }
 
+static thread_local PthreadPrivate* currentThread = nullptr;
+
+static void ApplyNativeName(const std::string& name) {
+#ifndef _WIN32
+    if (!name.empty()) pthread_setname_np(pthread_self(), name.substr(0, 15).c_str());
+#else
+    static_cast<void>(name);
+#endif
+}
+
 static void RunThread(std::unique_ptr<ThreadArgs> args) {
-    APS5_LOG_OUT("RunThread entry=0x%llx arg=%p self=%p", static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(args->entry)), args->arg, static_cast<void*>(args->self));
     const auto entry = args->entry;
     void* arg = args->arg;
     PthreadPrivate* self = args->self;
     args.reset();
-    FinishThread(self, entry(arg));
+    currentThread = self;
+    ApplyNativeName(self->name);
+    void* result = entry(arg);
+    PthreadSync::RunKeyDestructors_nid_no_patch();
+    FinishThread(self, result);
+}
+
+namespace PthreadSync {
+
+PthreadPrivate* CurrentThread_nid_no_patch() {
+    if (!currentThread) {
+        auto* adopted = new PthreadPrivate();
+        adopted->_detached = true;
+#ifdef _WIN32
+        adopted->threadId = std::this_thread::get_id();
+#endif
+        currentThread = adopted;
+    }
+    return currentThread;
+}
+
+void SetCurrentThread_nid_no_patch(PthreadPrivate* thread) {
+    currentThread = thread;
+}
+
 }
 
 #ifdef _WIN32
-static thread_local PthreadPrivate* currentThread = nullptr;
 
 static void ReleaseThread(PthreadPrivate* thread) {
     if (thread->references.fetch_sub(1, std::memory_order_acq_rel) != 1)
@@ -87,10 +116,6 @@ static unsigned __stdcall StartNativeThread(void* opaque) {
         }
         self->threadId = std::this_thread::get_id();
         currentThread = self;
-        if (!self->name.empty()) {
-            const std::wstring description(self->name.begin(), self->name.end());
-            SetThreadDescription(GetCurrentThread(), description.c_str());
-        }
         args->initialized.set_value();
     } catch (...) {
         args->initialized.set_exception(std::current_exception());
@@ -117,10 +142,7 @@ int APS5_VABI scePthreadCreate(Pthread* thread, const PthreadAttr* attr, Pthread
     if (attr && *attr) detached = ((*attr)->_detachstate == DETACH_DETACHED);
     p->_detached = detached;
     p->stackSize = attr ? (*attr)->_stacksize : DEFAULT_STACK_SIZE;
-    if (attr) {
-        p->affinity.store((*attr)->_affinity, std::memory_order_relaxed);
-        p->priority.store((*attr)->_schedpriority, std::memory_order_relaxed);
-    }
+    if (attr) p->priority = (*attr)->_schedpriority;
     if (name) p->name = name;
     std::promise<bool> start;
     auto args = std::make_unique<ThreadArgs>(ThreadArgs{entry, arg, p.get()});
@@ -206,28 +228,17 @@ void APS5_VABI scePthreadExit(void* retval) {
     ReleaseThread(self);
     _endthreadex(0);
 #else
+    if (currentThread) {
+        PthreadSync::RunKeyDestructors_nid_no_patch();
+        FinishThread(currentThread, retval);
+    }
     pthread_exit(retval);
 #endif
     __builtin_unreachable();
 }
 
 Pthread APS5_VABI scePthreadSelf() {
-#ifdef _WIN32
-    if (!currentThread) {
-        auto adopted = std::make_unique<PthreadPrivate>();
-        HANDLE handle = nullptr;
-        if (!DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &handle, 0, FALSE, DUPLICATE_SAME_ACCESS))
-            throw std::system_error(GetLastError(), std::system_category(), "Adopting guest thread");
-        adopted->nativeHandle = handle;
-        adopted->threadId = std::this_thread::get_id();
-        adopted->_detached = true;
-        adopted->references.store(1, std::memory_order_relaxed);
-        currentThread = adopted.release();
-    }
-    return currentThread;
-#else
-    return nullptr;
-#endif
+    return PthreadSync::CurrentThread_nid_no_patch();
 }
 
 void APS5_VABI scePthreadYield() {
@@ -245,86 +256,61 @@ int APS5_VABI scePthreadEqual(Pthread thread1, Pthread thread2) {
 }
 
 int APS5_VABI scePthreadGetaffinity(Pthread thread, KernelCpumask* mask) {
-    if (!thread || !mask) return SCE_KERNEL_ERROR_EINVAL;
-    *mask = thread->affinity.load(std::memory_order_relaxed);
+    if (!thread || !mask) return PthreadSync::ToSce(PthreadSync::kEINVAL);
+    *mask = thread->affinity == 0 ? 0xFF : thread->affinity;
     return SCE_OK;
 }
 
 int APS5_VABI scePthreadGetname(Pthread thread, char* name) {
-    if (!thread || !name) return SCE_KERNEL_ERROR_EINVAL;
-    std::lock_guard lock(thread->nameLock);
-    const std::size_t length = std::min<std::size_t>(thread->name.size(), THREAD_NAME_CAPACITY - 1);
+    if (!thread || !name) return PthreadSync::ToSce(PthreadSync::kEINVAL);
+    const auto length = std::min<std::size_t>(thread->name.size(), 31);
     std::memcpy(name, thread->name.data(), length);
     name[length] = '\0';
     return SCE_OK;
 }
 
 int APS5_VABI scePthreadGetprio(Pthread thread, int* prio) {
-    if (!thread || !prio) return SCE_KERNEL_ERROR_EINVAL;
-    *prio = thread->priority.load(std::memory_order_relaxed);
+    if (!thread || !prio) return PthreadSync::ToSce(PthreadSync::kEINVAL);
+    *prio = thread->priority;
     return SCE_OK;
 }
 
 int APS5_VABI scePthreadGetthreadid(void) {
-#ifdef _WIN32
-    return static_cast<int>(GetCurrentThreadId());
-#else
-    return static_cast<int>(std::hash<std::thread::id>{}(std::this_thread::get_id()) & 0x7fffffff);
-#endif
+    static std::atomic<int> nextId{1};
+    static thread_local int id = nextId.fetch_add(1, std::memory_order_relaxed);
+    return id;
 }
 
 int APS5_VABI scePthreadRename(Pthread thread, const char* name) {
-    if (!thread || !name) return SCE_KERNEL_ERROR_EINVAL;
-    std::lock_guard lock(thread->nameLock);
+    if (!thread || !name) return PthreadSync::ToSce(PthreadSync::kEINVAL);
     thread->name = name;
-#ifdef _WIN32
-    const std::wstring description(thread->name.begin(), thread->name.end());
-    SetThreadDescription(static_cast<HANDLE>(thread->nativeHandle), description.c_str());
-#endif
+    if (thread == currentThread) ApplyNativeName(thread->name);
     return SCE_OK;
 }
 
 int APS5_VABI scePthreadSetaffinity(Pthread thread, KernelCpumask mask) {
-    if (!thread || mask == 0) return SCE_KERNEL_ERROR_EINVAL;
-    thread->affinity.store(mask, std::memory_order_relaxed);
+    if (!thread) return PthreadSync::ToSce(PthreadSync::kEINVAL);
+    thread->affinity = mask;
     return SCE_OK;
 }
 
 int APS5_VABI scePthreadSetcancelstate(int state, int* old_state) {
-    static thread_local int cancelState = 0;
-    if (old_state) *old_state = cancelState;
-    cancelState = state;
+    if (old_state) *old_state = 0;
+    static_cast<void>(state);
     return SCE_OK;
 }
 
 int APS5_VABI scePthreadSetcanceltype(int type, int* old_type) {
-    static thread_local int cancelType = 0;
-    if (old_type) *old_type = cancelType;
-    cancelType = type;
+    if (old_type) *old_type = 0;
+    static_cast<void>(type);
     return SCE_OK;
 }
 
 int APS5_VABI scePthreadSetprio(Pthread thread, int prio) {
-    if (!thread) return SCE_KERNEL_ERROR_EINVAL;
-    thread->priority.store(prio, std::memory_order_relaxed);
+    if (!thread) return PthreadSync::ToSce(PthreadSync::kEINVAL);
+    thread->priority = prio;
     return SCE_OK;
 }
 
-int APS5_VABI scePthreadOnce(int32_t* once, void (APS5_VABI* init)(void)) {
-    if (!once || !init) return SCE_KERNEL_ERROR_EINVAL;
-    constexpr int32_t Never = 0;
-    constexpr int32_t Done = 1;
-    constexpr int32_t Running = 2;
-    std::atomic_ref<int32_t> state(*once);
-    int32_t expected = Never;
-    if (state.compare_exchange_strong(expected, Running, std::memory_order_acq_rel)) {
-        init();
-        state.store(Done, std::memory_order_release);
-        state.notify_all();
-        return SCE_OK;
-    }
-    while ((expected = state.load(std::memory_order_acquire)) == Running) state.wait(Running, std::memory_order_acquire);
-    return SCE_OK;
-}
 
 }

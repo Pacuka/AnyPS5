@@ -16,3 +16,37 @@ int APS5_VABI sceWebBrowserDialogTerminate(void) {
 }
 
 }
+
+extern "C" {
+
+int APS5_VABI sceWebBrowserDialogClose_nid_postfix() {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
+}
+
+int APS5_VABI sceWebBrowserDialogGetResult_nid_postfix() {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
+}
+
+int APS5_VABI sceWebBrowserDialogOpen_nid_postfix() {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
+}
+
+int APS5_VABI sceWebBrowserDialogOpenForPredeterminedContent_nid_postfix() {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
+}
+
+int APS5_VABI sceWebBrowserDialogResetCookie_nid_postfix() {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
+}
+
+int APS5_VABI sceWebBrowserDialogUpdateStatus_nid_postfix() {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
+}
+
+}

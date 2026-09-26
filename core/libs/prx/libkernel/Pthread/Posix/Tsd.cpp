@@ -2,32 +2,30 @@
 #include <cstddef>
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
-#include "Common.hpp"
+#include "../include/Pthread.hpp"
 
-extern "C" {
-int APS5_VABI scePthreadKeyCreate(PthreadKey* key, pthread_key_destructor_func_t destructor);
-int APS5_VABI scePthreadKeyDelete(PthreadKey key);
-void* APS5_VABI scePthreadGetspecific(PthreadKey key);
-int APS5_VABI scePthreadSetspecific(PthreadKey key, void* value);
-}
+using namespace PthreadSync;
 
 extern "C" {
 
 void* APS5_VABI pthread_getspecific_nid_postfix(PthreadKey key) {
-    return scePthreadGetspecific(key);
+    return GetSpecific_nid_no_patch(key);
 }
 
 int APS5_VABI pthread_setspecific_nid_postfix(PthreadKey key, void* value) {
-    return PosixThread::ToErrno(scePthreadSetspecific(key, value));
+    return SetSpecific_nid_no_patch(key, value);
 }
 
 int APS5_VABI pthread_key_create_nid_postfix(PthreadKey* key, pthread_key_destructor_func_t destructor) {
-    if (!key) return PosixThread::GUEST_EINVAL;
-    return PosixThread::ToErrno(scePthreadKeyCreate(key, destructor));
+    return KeyCreate_nid_no_patch(key, destructor);
 }
 
 int APS5_VABI pthread_key_delete_nid_postfix(PthreadKey key) {
-    return PosixThread::ToErrno(scePthreadKeyDelete(key));
+    return KeyDelete_nid_no_patch(key);
+}
+
+int APS5_VABI pthread_once_nid_postfix(int* once, void (APS5_VABI *routine)()) {
+    return Once_nid_no_patch(once, routine);
 }
 
 }

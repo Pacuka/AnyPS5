@@ -1,101 +1,135 @@
 #include "../include/Pthread.hpp"
 #include "prx/libc/include/General.hpp"
-#include "prx/libkernel/Time/include/Time.hpp"
 #include <chrono>
-#include <optional>
-#include <thread>
+#include <new>
 #include <stdexcept>
 
-static constexpr int SCE_OK = 0;
-static constexpr int SCE_KERNEL_ERROR_ENOMEM = 0x8002000C;
-static constexpr int SCE_KERNEL_ERROR_ETIMEDOUT = 0x8002003C;
+namespace PthreadSync {
 
-static int WaitOn(PthreadCondPrivate* cond, PthreadMutexPrivate* mutex, std::optional<std::chrono::microseconds> timeout, const void* caller) {
-    const auto self = std::this_thread::get_id();
-    bool timedOut = false;
-    const auto waitStart = std::chrono::steady_clock::now();
-    struct Trace {
-        const void* caller; const bool& timedOut; std::chrono::steady_clock::time_point start;
-        ~Trace() { KernelTraceWait_nid_postfix("cond", caller, static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count()), timedOut); }
-    } trace{caller, timedOut, waitStart};
-    mutex->_owner.store(std::thread::id{}, std::memory_order_relaxed);
-    if (mutex->_type == MutexType::Recursive) {
-        std::unique_lock<std::recursive_timed_mutex> lock(mutex->_rmtx, std::adopt_lock);
-        if (timeout) timedOut = cond->_cv.wait_for(lock, *timeout) == std::cv_status::timeout;
-        else cond->_cv.wait(lock);
-        lock.release();
-    } else {
-        std::unique_lock<std::timed_mutex> lock(mutex->_mtx, std::adopt_lock);
-        if (timeout) timedOut = cond->_cv.wait_for(lock, *timeout) == std::cv_status::timeout;
-        else cond->_cv.wait(lock);
-        lock.release();
+namespace {
+
+class MutexWaitAdapter {
+public:
+    explicit MutexWaitAdapter(PthreadMutexPrivate* mutex) : mutex(mutex) {}
+
+    void unlock() {
+        savedCount = mutex->_count;
+        mutex->_count = 0;
+        mutex->_owner.store(std::thread::id{}, std::memory_order_release);
+        mutex->_mtx.unlock();
     }
-    mutex->_owner.store(self, std::memory_order_relaxed);
-    return timedOut ? SCE_KERNEL_ERROR_ETIMEDOUT : SCE_OK;
+
+    void lock() {
+        mutex->_mtx.lock();
+        mutex->_owner.store(std::this_thread::get_id(), std::memory_order_release);
+        mutex->_count = savedCount;
+    }
+
+private:
+    PthreadMutexPrivate* mutex;
+    int savedCount = 0;
+};
+
 }
+
+PthreadCondPrivate* CondResolve_nid_no_patch(PthreadCond* cond) {
+    if (!cond) return nullptr;
+    auto& slot = *reinterpret_cast<std::atomic<PthreadCondPrivate*>*>(cond);
+    auto* current = slot.load(std::memory_order_acquire);
+    if (current) return current;
+    auto* created = new PthreadCondPrivate();
+    if (slot.compare_exchange_strong(current, created, std::memory_order_acq_rel)) return created;
+    delete created;
+    return current;
+}
+
+int CondInit_nid_no_patch(PthreadCond* cond, const PthreadCondattr* attr) {
+    if (!cond) return kEINVAL;
+    auto* created = new (std::nothrow) PthreadCondPrivate();
+    if (!created) return kENOMEM;
+    if (attr && *attr) created->_clockid = (*attr)->_clockid;
+    *cond = created;
+    return 0;
+}
+
+int CondDestroy_nid_no_patch(PthreadCond* cond) {
+    if (!cond) return kEINVAL;
+    delete *cond;
+    *cond = nullptr;
+    return 0;
+}
+
+int CondWait_nid_no_patch(PthreadCond* cond, PthreadMutex* mutex, MutexType defaultType, const Deadline* deadline) {
+    auto* c = CondResolve_nid_no_patch(cond);
+    auto* m = MutexResolve_nid_no_patch(mutex, defaultType);
+    if (!c || !m) return kEINVAL;
+    if (m->_owner.load(std::memory_order_acquire) != std::this_thread::get_id()) return kEPERM;
+    MutexWaitAdapter adapter(m);
+    if (!deadline) {
+        c->_cv.wait(adapter);
+        return 0;
+    }
+    return c->_cv.wait_until(adapter, *deadline) == std::cv_status::timeout ? kETIMEDOUT : 0;
+}
+
+int CondSignal_nid_no_patch(PthreadCond* cond, bool all) {
+    auto* c = CondResolve_nid_no_patch(cond);
+    if (!c) return kEINVAL;
+    if (all) c->_cv.notify_all();
+    else c->_cv.notify_one();
+    return 0;
+}
+
+}
+
+using namespace PthreadSync;
 
 extern "C" {
 
 int APS5_VABI scePthreadCondattrInit(PthreadCondattr* attr) {
-    if (!attr) throw std::runtime_error("scePthreadCondattrInit: null attr");
-    auto* p = new (std::nothrow) PthreadCondattrPrivate{0};
-    if (!p) return SCE_KERNEL_ERROR_ENOMEM;
+    if (!attr) return ToSce(kEINVAL);
+    auto* p = new (std::nothrow) PthreadCondattrPrivate{};
+    if (!p) return ToSce(kENOMEM);
     *attr = p;
-    return SCE_OK;
+    return 0;
 }
 
 int APS5_VABI scePthreadCondattrDestroy(PthreadCondattr* attr) {
-    if (!attr || !*attr) throw std::runtime_error("scePthreadCondattrDestroy: null attr");
+    if (!attr || !*attr) return ToSce(kEINVAL);
     delete *attr;
     *attr = nullptr;
-    return SCE_OK;
+    return 0;
 }
 
 int APS5_VABI scePthreadCondInit(PthreadCond* cond, const PthreadCondattr* attr, const char*) {
-    if (!cond) throw std::runtime_error("scePthreadCondInit: null cond");
-    auto* p = new (std::nothrow) PthreadCondPrivate{};
-    if (!p) return SCE_KERNEL_ERROR_ENOMEM;
-    if (attr && *attr) p->_clockid = (*attr)->_clockid;
-    *cond = p;
-    return SCE_OK;
+    return ToSce(CondInit_nid_no_patch(cond, attr));
 }
 
 int APS5_VABI scePthreadCondDestroy(PthreadCond* cond) {
-    if (!cond || !*cond) throw std::runtime_error("scePthreadCondDestroy: null cond");
-    delete *cond;
-    *cond = nullptr;
-    return SCE_OK;
+    return ToSce(CondDestroy_nid_no_patch(cond));
 }
 
 int APS5_VABI scePthreadCondSignal(PthreadCond* cond) {
-    if (!cond || !*cond) throw std::runtime_error("scePthreadCondSignal: null cond");
-    (*cond)->_cv.notify_one();
-    return SCE_OK;
+    return ToSce(CondSignal_nid_no_patch(cond, false));
 }
 
 int APS5_VABI scePthreadCondBroadcast(PthreadCond* cond) {
-    if (!cond || !*cond) throw std::runtime_error("scePthreadCondBroadcast: null cond");
-    (*cond)->_cv.notify_all();
-    return SCE_OK;
-}
-
-int APS5_VABI scePthreadCondTimedwait(PthreadCond* cond, PthreadMutex* mutex, unsigned int usec) {
-    if (!cond || !*cond || !mutex || !*mutex)
-        throw std::runtime_error("scePthreadCondTimedwait: null arg");
-    return WaitOn(*cond, *mutex, std::chrono::microseconds(usec), __builtin_return_address(0));
+    return ToSce(CondSignal_nid_no_patch(cond, true));
 }
 
 int APS5_VABI scePthreadCondSignalto(PthreadCond* cond, Pthread thread) {
     (void)thread;
-    if (!cond || !*cond) throw std::runtime_error("scePthreadCondSignalto: null cond");
-    (*cond)->_cv.notify_all();
-    return SCE_OK;
+    return ToSce(CondSignal_nid_no_patch(cond, true));
 }
 
 int APS5_VABI scePthreadCondWait(PthreadCond* cond, PthreadMutex* mutex) {
-    if (!cond || !*cond || !mutex || !*mutex)
-        throw std::runtime_error("scePthreadCondWait: null arg");
-    return WaitOn(*cond, *mutex, std::nullopt, __builtin_return_address(0));
+    return ToSce(CondWait_nid_no_patch(cond, mutex, MutexType::ErrorCheck, nullptr));
 }
+
+int APS5_VABI scePthreadCondTimedwait(PthreadCond* cond, PthreadMutex* mutex, unsigned int usec) {
+    const auto deadline = DeadlineFromRelative_nid_no_patch(usec);
+    return ToSce(CondWait_nid_no_patch(cond, mutex, MutexType::ErrorCheck, &deadline));
+}
+
 
 }

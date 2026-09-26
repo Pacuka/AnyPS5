@@ -17,7 +17,21 @@ using Free = void (APS5_VABI *)(void*);
 using Reallocate = void* (APS5_VABI *)(void*, std::size_t);
 using Calloc = void* (APS5_VABI *)(std::size_t, std::size_t);
 using Align = void* (APS5_VABI *)(std::size_t, std::size_t);
+using ReallocAlign = void* (APS5_VABI *)(void*, std::size_t, std::size_t);
 using PosixAlign = int (APS5_VABI *)(void**, std::size_t, std::size_t);
+using UsableSize = std::size_t (APS5_VABI *)(void*);
+
+// Slots of the SceLibcMallocReplace callback table, starting at its malloc entry.
+enum HeapSlot : std::size_t {
+    HeapMalloc = 0,
+    HeapFree = 1,
+    HeapCalloc = 2,
+    HeapRealloc = 3,
+    HeapMemalign = 4,
+    HeapReallocAlign = 5,
+    HeapPosixMemalign = 6,
+    HeapUsableSize = 9,
+};
 using Initialize = void (APS5_VABI *)();
 
 std::mutex heapMutex;
@@ -87,13 +101,13 @@ void ApplicationHeapRegister_nid_no_patch(void* const* api) {
     if (api == nullptr) throw std::invalid_argument("application heap: null allocator API");
     std::array<void*, 10> replacement;
     std::memcpy(replacement.data(), api, sizeof(replacement));
-    for (std::size_t index = 0; index < 7; ++index) {
+    for (std::size_t index = HeapMalloc; index <= HeapPosixMemalign; ++index) {
         if (replacement[index] == nullptr) throw std::invalid_argument("application heap: incomplete allocator API");
     }
     std::lock_guard lock(heapMutex);
     if (heapFailure) std::rethrow_exception(heapFailure);
     if (heapFinalized) throw std::runtime_error("application heap: allocator has been finalized");
-    if (heapApi[0] != nullptr && heapApi != replacement) throw std::runtime_error("application heap: cannot replace an active allocator");
+    if (heapApi[HeapMalloc] != nullptr && heapApi != replacement) throw std::runtime_error("application heap: cannot replace an active allocator");
     heapApi = replacement;
 }
 
@@ -125,14 +139,14 @@ void ApplicationHeapInitialize_nid_no_patch(const void* processParameters) {
 }
 
 void* ApplicationHeapAllocate_nid_no_patch(std::size_t bytes) {
-    const auto allocate = callback<Allocate>(0);
+    const auto allocate = callback<Allocate>(HeapMalloc);
     CallbackScope scope;
     return requireAllocation(allocate(bytes));
 }
 
 void ApplicationHeapFree_nid_no_patch(void* pointer) {
     if (pointer == nullptr) return;
-    const auto free = callback<Free>(1);
+    const auto free = callback<Free>(HeapFree);
     CallbackScope scope;
     free(pointer);
 }
@@ -142,14 +156,14 @@ void* ApplicationHeapReallocate_nid_no_patch(void* pointer, std::size_t bytes) {
         ApplicationHeapFree_nid_no_patch(pointer);
         return nullptr;
     }
-    const auto reallocate = callback<Reallocate>(3);
+    const auto reallocate = callback<Reallocate>(HeapRealloc);
     CallbackScope scope;
     return requireAllocation(reallocate(pointer, bytes));
 }
 
 void* ApplicationHeapAlign_nid_no_patch(std::size_t alignment, std::size_t bytes) {
     requireAlignment(alignment);
-    const auto align = callback<Align>(4);
+    const auto align = callback<Align>(HeapMemalign);
     CallbackScope scope;
     void* pointer = requireAllocation(align(alignment, bytes));
     if (reinterpret_cast<std::uintptr_t>(pointer) % alignment != 0) throw std::runtime_error("application heap: allocator returned a misaligned pointer");
@@ -158,7 +172,7 @@ void* ApplicationHeapAlign_nid_no_patch(std::size_t alignment, std::size_t bytes
 
 void* ApplicationHeapCalloc_nid_no_patch(std::size_t count, std::size_t bytes) {
     if (bytes != 0 && count > std::numeric_limits<std::size_t>::max() / bytes) throw std::length_error("application heap: calloc size overflow");
-    const auto calloc = callback<Calloc>(2);
+    const auto calloc = callback<Calloc>(HeapCalloc);
     CallbackScope scope;
     return requireAllocation(calloc(count, bytes));
 }
@@ -167,7 +181,7 @@ int ApplicationHeapPosixAlign_nid_no_patch(void** pointer, std::size_t alignment
     if (pointer == nullptr) throw std::invalid_argument("application heap: null allocation output");
     requireAlignment(alignment);
     if (alignment < sizeof(void*)) throw std::invalid_argument("application heap: invalid POSIX alignment");
-    const auto align = callback<PosixAlign>(6);
+    const auto align = callback<PosixAlign>(HeapPosixMemalign);
     CallbackScope scope;
     void* result = nullptr;
     if (align(&result, alignment, bytes) != 0) throw std::runtime_error("application heap: posix_memalign failed");
@@ -175,4 +189,24 @@ int ApplicationHeapPosixAlign_nid_no_patch(void** pointer, std::size_t alignment
     if (reinterpret_cast<std::uintptr_t>(result) % alignment != 0) throw std::runtime_error("application heap: allocator returned a misaligned pointer");
     *pointer = result;
     return 0;
+}
+
+void* ApplicationHeapReallocAlign_nid_no_patch(void* pointer, std::size_t bytes, std::size_t alignment) {
+    requireAlignment(alignment);
+    if (bytes == 0) {
+        ApplicationHeapFree_nid_no_patch(pointer);
+        return nullptr;
+    }
+    const auto reallocAlign = callback<ReallocAlign>(HeapReallocAlign);
+    CallbackScope scope;
+    void* result = requireAllocation(reallocAlign(pointer, bytes, alignment));
+    if (reinterpret_cast<std::uintptr_t>(result) % alignment != 0) throw std::runtime_error("application heap: allocator returned a misaligned pointer");
+    return result;
+}
+
+std::size_t ApplicationHeapUsableSize_nid_no_patch(void* pointer) {
+    if (pointer == nullptr) return 0;
+    const auto usableSize = callback<UsableSize>(HeapUsableSize);
+    CallbackScope scope;
+    return usableSize(pointer);
 }

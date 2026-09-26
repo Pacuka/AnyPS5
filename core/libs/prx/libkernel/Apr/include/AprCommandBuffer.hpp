@@ -26,6 +26,7 @@ enum class Opcode : std::uint32_t {
     Nop = 0,
     ReadFile = 1,
     WriteAddress = 2,
+    WriteKernelEventQueue = 3,
 };
 
 struct CommandHeader {
@@ -48,6 +49,14 @@ struct WriteAddressCommand {
     std::uint64_t value;
     std::uint32_t flags;
     std::uint32_t reserved;
+};
+
+struct WriteKernelEventQueueCommand {
+    CommandHeader header;
+    std::int32_t id;
+    std::uint32_t flags;
+    std::int64_t queue;
+    std::uint64_t data;
 };
 
 }
