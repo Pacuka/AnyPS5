@@ -7,7 +7,11 @@
 #include "DirectMemory.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <cstdio>
+#endif
 #include <algorithm>
 #include <stdexcept>
 #include <string>
@@ -179,12 +183,35 @@ int APS5_VABI sceKernelVirtualQuery(const void* addr, int flags, VirtualQueryInf
  }
  // Memory the registry does not know (the title's own heap blocks, stacks): the host's committed
  // region around the address is the honest extent; unmapped memory is an error, as on the PS5.
+#ifdef _WIN32
  MEMORY_BASIC_INFORMATION host{};
  if (VirtualQuery(addr, &host, sizeof(host)) == 0 || host.State != MEM_COMMIT) return SCE_KERNEL_ERROR_EACCES;
  info->start = reinterpret_cast<uintptr_t>(host.BaseAddress);
  info->end = info->start + host.RegionSize;
  const bool writable = (host.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_WRITECOPY)) != 0;
  const bool executable = (host.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+#else
+ FILE* maps = std::fopen("/proc/self/maps", "r");
+ if (maps == nullptr) return SCE_KERNEL_ERROR_EACCES;
+ unsigned long long begin = 0;
+ unsigned long long finish = 0;
+ char permissions[5]{};
+ bool found = false;
+ char line[512];
+ while (std::fgets(line, sizeof(line), maps) != nullptr) {
+  if (std::sscanf(line, "%llx-%llx %4s", &begin, &finish, permissions) != 3) continue;
+  if (address >= begin && address < finish) {
+   found = permissions[0] == 'r';
+   break;
+  }
+ }
+ std::fclose(maps);
+ if (!found) return SCE_KERNEL_ERROR_EACCES;
+ info->start = begin;
+ info->end = finish;
+ const bool writable = permissions[1] == 'w';
+ const bool executable = permissions[2] == 'x';
+#endif
  info->protection = 1 | (writable ? 2 : 0) | (executable ? 4 : 0);
  info->is_flexible = 1;
  info->is_committed = 1;
