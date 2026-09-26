@@ -135,7 +135,8 @@ std::uint32_t* WriteRegisters(CommandBuffer* buffer, std::uint32_t opcode, const
 
 std::uint32_t* WriteIndirectRegisters(CommandBuffer* buffer, std::uint32_t opcode, const volatile ShaderRegister* registers, std::uint32_t count, const char* function) {
     const auto address = reinterpret_cast<std::uintptr_t>(registers);
-    CheckAddress(address, 4, function);
+    // A null address is a placeholder the title fills in later with the *PatchSetAddress calls.
+    if (address != 0) CheckAddress(address, 4, function);
     CheckBits(count, 0x3fffu, function);
     return Emit(buffer, opcode, {static_cast<std::uint32_t>(address), static_cast<std::uint32_t>(address >> 32u), 0x80000000u, count}, function);
 }
@@ -147,6 +148,12 @@ void PatchIndirectAddress(std::uint32_t* packet, std::uint32_t opcode, const vol
     CheckAddress(address, 4, function);
     packet[1] = static_cast<std::uint32_t>(address);
     packet[2] = static_cast<std::uint32_t>(address >> 32u);
+}
+
+void PatchIndirectSetCount(std::uint32_t* packet, std::uint32_t opcode, std::uint32_t count, const char* function) {
+    ValidatePacket(packet, opcode, 5, function);
+    Require(packet[3] == 0x80000000u && count <= 0x3fffu, function, "indirect register count overflow or invalid packet");
+    packet[4] = count;
 }
 
 void PatchIndirectCount(std::uint32_t* packet, std::uint32_t opcode, std::uint32_t count, const char* function) {

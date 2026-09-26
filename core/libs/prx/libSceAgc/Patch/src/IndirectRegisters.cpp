@@ -20,10 +20,8 @@ int APS5_VABI sceAgcSetCxRegIndirectPatchSetAddress(std::uint32_t* cmd, const vo
 }
 
 int APS5_VABI sceAgcSetCxRegIndirectPatchSetNumRegisters(uint32_t* cmd, uint32_t num_regs) {
- (void)cmd;
- (void)num_regs;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+    Agc::Command::PatchIndirectSetCount(cmd, 0x9fu, num_regs, __func__);
+    return 0;
 }
 
 int APS5_VABI sceAgcSetShRegIndirectPatchAddRegisters(std::uint32_t* cmd, std::uint32_t numRegs) {
@@ -37,10 +35,8 @@ int APS5_VABI sceAgcSetShRegIndirectPatchSetAddress(std::uint32_t* cmd, const vo
 }
 
 int APS5_VABI sceAgcSetShRegIndirectPatchSetNumRegisters(uint32_t* cmd, uint32_t num_regs) {
- (void)cmd;
- (void)num_regs;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+    Agc::Command::PatchIndirectSetCount(cmd, 0x63u, num_regs, __func__);
+    return 0;
 }
 
 int APS5_VABI sceAgcSetUcRegIndirectPatchAddRegisters(std::uint32_t* cmd, std::uint32_t numRegs) {
@@ -54,10 +50,8 @@ int APS5_VABI sceAgcSetUcRegIndirectPatchSetAddress(std::uint32_t* cmd, const vo
 }
 
 int APS5_VABI sceAgcSetUcRegIndirectPatchSetNumRegisters(uint32_t* cmd, uint32_t num_regs) {
- (void)cmd;
- (void)num_regs;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+    Agc::Command::PatchIndirectSetCount(cmd, 0x64u, num_regs, __func__);
+    return 0;
 }
 
 }

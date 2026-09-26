@@ -27,6 +27,45 @@
 namespace AgcDriver::Graphics {
 namespace {
 
+// A sampled image descriptor with format 0 is an unbound slot; the hardware returns zero for it.
+// It is replaced by a 1x1 linear texture of the shader's image shape over zeroed memory whose
+// channels all select constant 0, so every consumer (cache key, detile, view) sees one descriptor.
+std::span<const std::uint32_t> SubstituteNullTexture(const ShaderRecompiler::DescriptorBinding& binding, std::span<const std::uint32_t> words) {
+    if (binding.kind != ShaderRecompiler::DescriptorKind::SampledImage || words.size() != 8 || ((words[1] >> 20u) & 0x1ffu) != 0 || !binding.imageShape.has_value()) return words;
+    static std::mutex mutex;
+    static std::map<int, std::array<std::uint32_t, 8>> substitutes;
+    static void* zeroes = nullptr;
+    std::lock_guard lock(mutex);
+    const auto shape = *binding.imageShape;
+    auto found = substitutes.find(static_cast<int>(shape));
+    if (found == substitutes.end()) {
+        constexpr std::size_t backingBytes = 1u << 16u;
+        if (zeroes == nullptr) {
+            zeroes = std::aligned_alloc(backingBytes, backingBytes);
+            Require(zeroes != nullptr, "cannot allocate the null texture backing");
+            std::memset(zeroes, 0, backingBytes);
+        }
+        const auto base = reinterpret_cast<std::uint64_t>(zeroes) >> 8u;
+        constexpr std::uint32_t rgba8Unorm = 56;
+        std::optional<std::array<std::uint32_t, 8>> chosen;
+        for (const std::uint32_t type : {9u, 13u, 11u, 10u, 8u, 12u}) {
+            std::array<std::uint32_t, 8> candidate{};
+            candidate[0] = static_cast<std::uint32_t>(base);
+            candidate[1] = static_cast<std::uint32_t>(base >> 32u) | (rgba8Unorm << 20u);
+            candidate[3] = type << 28u;
+            candidate[4] = type == 11u ? 5u : 0u;
+            if (MatchesGuestDimension(shape, DecodeTextureResource(candidate).dimension)) {
+                chosen = candidate;
+                break;
+            }
+        }
+        Require(chosen.has_value(), "no null texture descriptor for the shader's image shape");
+        found = substitutes.emplace(static_cast<int>(shape), *chosen).first;
+    }
+    return found->second;
+}
+
+
 bool overlap(std::uint64_t first, std::size_t firstSize, std::uint64_t second, std::size_t secondSize) {
     return first < second + secondSize && second < first + firstSize;
 }
@@ -1046,7 +1085,7 @@ bool ShaderResources::Revalidate(std::span<const CompiledShader> shaders) {
                 if (binding.kind == ShaderRecompiler::DescriptorKind::SampledImage) {
                     const auto elementWords = binding.count != 0 ? binding.guestDescriptor.size() / binding.count : 0;
                     for (std::uint32_t element = 0; element < binding.count; ++element) {
-                        const auto words = std::span<const std::uint32_t>(binding.guestDescriptor).subspan(static_cast<std::size_t>(element) * elementWords, elementWords);
+                        const auto words = SubstituteNullTexture(binding, std::span<const std::uint32_t>(binding.guestDescriptor).subspan(static_cast<std::size_t>(element) * elementWords, elementWords));
                         const auto resource = DecodeTextureResource(words);
                         const VkComponentMapping components{ComponentSwizzleFor(resource.dstSelX), ComponentSwizzleFor(resource.dstSelY), ComponentSwizzleFor(resource.dstSelZ), ComponentSwizzleFor(resource.dstSelW)};
                         if (textureIndex >= textures.size() || cachedTexture(context, words, resource, components) != textures[textureIndex]) return finish(false, false);
@@ -1520,7 +1559,7 @@ void forEachImageElement(const ShaderRecompiler::RecompileResult& program, Visit
         if (binding.role != ShaderRecompiler::DescriptorRole::GuestImages || binding.count == 0) continue;
         if (binding.kind != ShaderRecompiler::DescriptorKind::SampledImage && binding.kind != ShaderRecompiler::DescriptorKind::StorageImage) continue;
         const auto elementWords = binding.guestDescriptor.size() / binding.count;
-        for (std::uint32_t element = 0; element < binding.count; ++element) visit(binding, element, std::span<const std::uint32_t>(binding.guestDescriptor).subspan(static_cast<std::size_t>(element) * elementWords, elementWords));
+        for (std::uint32_t element = 0; element < binding.count; ++element) visit(binding, element, SubstituteNullTexture(binding, std::span<const std::uint32_t>(binding.guestDescriptor).subspan(static_cast<std::size_t>(element) * elementWords, elementWords)));
     }
 }
 
@@ -1550,7 +1589,7 @@ bool ShaderResources::precollectImages() {
         const auto& binding = *deferred.binding;
         const auto elementWords = binding.guestDescriptor.size() / binding.count;
         for (std::uint32_t element = 0; element < binding.count; ++element) {
-            const auto words = std::span<const std::uint32_t>(binding.guestDescriptor).subspan(static_cast<std::size_t>(element) * elementWords, elementWords);
+            const auto words = SubstituteNullTexture(binding, std::span<const std::uint32_t>(binding.guestDescriptor).subspan(static_cast<std::size_t>(element) * elementWords, elementWords));
             ImageRecord record;
             record.sampled = binding.kind == ShaderRecompiler::DescriptorKind::SampledImage;
             try {
@@ -1627,7 +1666,7 @@ void ShaderResources::resolveImageBinding(const ShaderRecompiler::DescriptorBind
     if (binding.kind == ShaderRecompiler::DescriptorKind::SampledImage) {
         const auto elementWords = binding.guestDescriptor.size() / binding.count;
         for (std::uint32_t element = 0; element < binding.count; ++element) {
-            const auto words = std::span<const std::uint32_t>(binding.guestDescriptor).subspan(static_cast<std::size_t>(element) * elementWords, elementWords);
+            const auto words = SubstituteNullTexture(binding, std::span<const std::uint32_t>(binding.guestDescriptor).subspan(static_cast<std::size_t>(element) * elementWords, elementWords));
             const auto* record = nextRecord();
             const auto resource = record != nullptr && record->decoded ? record->resource : DecodeTextureResource(words);
             Require(MatchesGuestDimension(*binding.imageShape, resource.dimension), "guest texture dimension disagrees with the shader's declared image shape");

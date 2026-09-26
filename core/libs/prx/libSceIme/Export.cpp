@@ -18,9 +18,10 @@ int APS5_VABI sceImeGetPanelSize(const Param* param, uint32_t* width, uint32_t* 
  return 0;
 }
 
+// No USB keyboard is attached: the keyboard service opens and closes normally but never reports
+// a device or a key event.
 int APS5_VABI sceImeKeyboardClose(int32_t user_id) {
  (void)user_id;
- NotImplemented_nid_no_patch(__func__);
  return 0;
 }
 
@@ -32,23 +33,21 @@ int APS5_VABI sceImeKeyboardGetInfo(uint32_t resource_id, KeyboardInfo* info) {
 }
 
 int APS5_VABI sceImeKeyboardGetResourceId(int32_t user_id, KeyboardResourceIdArray* resource_ids) {
- (void)user_id;
- (void)resource_ids;
- NotImplemented_nid_no_patch(__func__);
+ if (resource_ids == nullptr) APS5_INVALID_ARG_EX;
+ *resource_ids = {};
+ resource_ids->user_id = user_id;
  return 0;
 }
 
 int APS5_VABI sceImeKeyboardOpen(int32_t user_id, const KeyboardParam* param) {
  (void)user_id;
- (void)param;
- NotImplemented_nid_no_patch(__func__);
+ if (param == nullptr || param->handler == nullptr) APS5_INVALID_ARG_EX;
  return 0;
 }
 
 int APS5_VABI sceImeKeyboardSetMode(int32_t user_id, uint32_t mode) {
  (void)user_id;
  (void)mode;
- NotImplemented_nid_no_patch(__func__);
  return 0;
 }
 
@@ -84,9 +83,9 @@ int APS5_VABI sceImeSetTextGeometry(TextAreaMode mode, const TextGeometry* geome
  return 0;
 }
 
+// Neither the keyboard nor an IME panel ever has pending events, so there is nothing to deliver.
 int APS5_VABI sceImeUpdate(EventHandler handler) {
  (void)handler;
- NotImplemented_nid_no_patch(__func__);
  return 0;
 }
 

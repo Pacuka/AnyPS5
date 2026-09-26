@@ -1,3 +1,4 @@
+#include <cstdio>
 #include "prx/libSceAgcDriver/Graphics/include/TextureTiling.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Context.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/TextureFormat.hpp"
@@ -244,8 +245,13 @@ std::array<std::uint32_t, 3> ThickBlockExtent(TextureTileMode tileMode, std::uin
     const auto index = static_cast<std::size_t>(std::countr_zero(bytesPerElement));
     switch (tileMode) {
         case TextureTileMode::kStandard4KB: return {1u << thick4KB[index][0], 1u << thick4KB[index][1], 1u << thick4KB[index][2]};
-        case TextureTileMode::kStandard64KB: return {1u << thick64KB[index][0], 1u << thick64KB[index][1], 1u << thick64KB[index][2]};
-        default: throw std::runtime_error("AGC graphics: 3D textures are only supported linear or in SW_4KB_S / SW_64KB_S");
+        // The 64 KiB XOR modes share the thick block extent of SW_64KB_S; only the order inside differs.
+        case TextureTileMode::kStandard64KB:
+        case TextureTileMode::kZ64KBX:
+        case TextureTileMode::kS64KBX:
+        case TextureTileMode::kD64KBX:
+        case TextureTileMode::kR64KBX: return {1u << thick64KB[index][0], 1u << thick64KB[index][1], 1u << thick64KB[index][2]};
+        default: throw std::runtime_error("AGC graphics: 3D textures are only supported linear, in SW_4KB_S or in a 64 KiB mode (tile mode " + std::to_string(static_cast<int>(tileMode)) + ", " + std::to_string(bytesPerElement) + " bytes per element)");
     }
 }
 

@@ -287,7 +287,8 @@ State DecodeState(const QueueState& queue) {
         throw std::runtime_error(message.str());
     }
     // Bits 26/27 (ZCLIP_NEAR/FAR_DISABLE) become depth clamping; bit 19 selects the [0, 1] clip space.
-    zero(cx, 0x204, ~(0x80000u | 0x0c000000u), "unsupported PA_CL_CLIP_CNTL flags");
+    // Bit 24 (DX_LINEAR_ATTR_CLIP_ENA) clips noperspective attributes the Direct3D way, as Vulkan does.
+    zero(cx, 0x204, ~(0x80000u | 0x01000000u | 0x0c000000u), "unsupported PA_CL_CLIP_CNTL flags");
     result.depthClamp = (read(cx, 0x204) & 0x0c000000u) != 0;
     result.negativeOneToOne = (read(cx, 0x204) & 0x80000u) == 0;
     const auto raster = read(cx, 0x205);
@@ -340,8 +341,14 @@ State DecodeState(const QueueState& queue) {
         const auto format = (info >> 2u) & 0x1fu;
         const auto decoded = DecodeColorFormat(format, number, swap);
         // ROUND_MODE (bit 18) only affects unorm rounding. With DCC_ENABLE (bit 28) the target is written
-        // uncompressed and only its fast-clear keys matter (see DccMetadata.hpp).
-        Require((info & ~(0x00029f7cu | 0x00040000u | 0x10000000u)) == 0, "color compression, DCC, endian conversion, nonstandard rounding or color optimization is unsupported");
+        // uncompressed and only its fast-clear keys matter (see DccMetadata.hpp). FAST_CLEAR (bit 13)
+        // likewise leaves the target written uncompressed. Tech debt: a clear done only through CMASK
+        // is not modeled, so such a target keeps its previous contents.
+        if ((info & ~(0x00029f7cu | 0x00002000u | 0x00040000u | 0x10000000u)) != 0) {
+            std::ostringstream message;
+            message << "AGC graphics: CB_COLOR" << slot << "_INFO=0x" << std::hex << info << ": color compression, endian conversion or color optimization is unsupported";
+            throw std::runtime_error(message.str());
+        }
         Require((info & 0x8000u) != 0 || number == 7, "unclamped normalized color is unsupported");
         // CB_COLOR_VIEW: MIP_LEVEL (bits 24-27) selects the rendered mip; array slices are not modeled.
         const auto view = read(cx, 0x31b + stride);

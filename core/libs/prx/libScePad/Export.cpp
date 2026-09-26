@@ -62,11 +62,16 @@ int APS5_VABI scePadGetHandle(int user_id, int type, int index) {
  return 0;
 }
 
+// No trigger effect ever runs (see scePadSetTriggerEffect), so both triggers report the idle state.
 int APS5_VABI scePadGetTriggerEffectState(int handle, PadTriggerEffectStateInformation* info) {
- (void)handle;
- (void)info;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+ if (handle != PAD_HANDLE) {
+  return PAD_ERROR_INVALID_HANDLE;
+ }
+ if (info == nullptr) {
+  return PAD_ERROR_INVALID_ARG;
+ }
+ std::memset(info, 0, sizeof(*info));
+ return PAD_OK;
 }
 
 int APS5_VABI scePadInit_nid_postfix(void) {
@@ -98,9 +103,12 @@ int APS5_VABI scePadRead_nid_postfix(int handle, PadData* data, int num) {
 }
 
 int APS5_VABI scePadReadState(int handle, PadData* data) {
- if (handle != 1) APS5_INVALID_ARG_EX;
- if (data == nullptr) APS5_INVALID_ARG_EX;
-
+ if (handle != PAD_HANDLE) {
+  return PAD_ERROR_INVALID_HANDLE;
+ }
+ if (data == nullptr) {
+  return PAD_ERROR_INVALID_ARG;
+ }
  *data = Pad::ReadState();
 
  return 0;

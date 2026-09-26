@@ -1,3 +1,4 @@
+#include <cstdio>
 #include "prx/libSceAgcDriver/Graphics/include/TextureDetiler.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/TextureSwizzleEquations.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/TextureTiling.hpp"
@@ -102,8 +103,16 @@ VkPipeline TextureDetiler::pipeline(TextureTileMode tileMode, std::uint32_t elem
     // per-bit XOR equation for the equation family (2); 20-21 override the block extent in elements.
     std::array<std::uint32_t, 22> values{elementBytes, BlockBytesFor(tileMode), tileMode == TextureTileMode::kLinear ? 0u : 1u, retile ? 1u : 0u};
     if (thick) {
-        const auto thickMode = tileMode == TextureTileMode::kStandard4KB ? 0x105u : tileMode == TextureTileMode::kStandard64KB ? 0x109u : 0u;
-        Require(thickMode != 0, "3D textures are only detiled from SW_4KB_S or SW_64KB_S");
+        auto thickMode = tileMode == TextureTileMode::kStandard4KB ? 0x105u : tileMode == TextureTileMode::kStandard64KB ? 0x109u : 0u;
+        if (thickMode == 0 && XorSwizzleMode(tileMode) != 0) {
+            // Tech debt: the thick XOR equations of the 64 KiB _X modes are not tabulated yet; the
+            // SW_64KB_S order is exact only for the block origin (e.g. the 1x1x1 placeholder volumes).
+            static bool warned = false;
+            if (!warned) std::fprintf(stderr, "[gpu] 3D texture in XOR swizzle mode %u detiled with the SW_64KB_S equation\n", XorSwizzleMode(tileMode));
+            warned = true;
+            thickMode = 0x109u;
+        }
+        Require(thickMode != 0, "3D textures are only detiled from SW_4KB_S or a 64 KiB mode");
         const auto* equation = FindTextureSwizzleEquation(thickMode, elementBytes);
         Require(equation != nullptr, "no thick swizzle equation for the element size");
         values[2] = 2u;

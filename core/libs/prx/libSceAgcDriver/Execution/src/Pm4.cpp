@@ -259,6 +259,7 @@ void Validate(std::span<const std::uint32_t> packet, std::uint32_t queue) {
             if (opcode != 0x63) graphics();
             size(5);
             require((packet[1] & 3u) == 0 && packet[3] == 0x80000000u && packet[4] <= 0x3fffu, "unsupported indirect-register address or control fields");
+            require(packet[4] == 0 || packet[1] != 0 || packet[2] != 0, "indirect-register address has not been patched");
             break;
         case 0x69: case 0x76: case 0x79: case 0x7a: {
             if (IsTagMarker(packet)) break;
@@ -324,7 +325,8 @@ void Validate(std::span<const std::uint32_t> packet, std::uint32_t queue) {
         }
         case 0x50:
             size(7);
-            require((packet[1] & ~0xe0300001u) == 0, "DMA_DATA cache or reserved fields are not implemented");
+            // Bits 13-14 and 25-26 are source and destination cache policies: hints with no effect on the copy.
+            require((packet[1] & ~0xe6306001u) == 0, "DMA_DATA reserved fields are not implemented");
             require(memorySelector(dmaDestination(packet)), "DMA_DATA register, GDS or prefetch destination is not implemented");
             require(memorySelector(dmaSource(packet)) || dmaSource(packet) == 2, "DMA_DATA register or GDS source is not implemented");
             require(dmaSource(packet) != 2 || packet[3] == 0, "DMA_DATA immediate exceeds 32 bits");
