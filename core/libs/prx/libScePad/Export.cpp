@@ -107,29 +107,34 @@ int APS5_VABI scePadReadState(int handle, PadData* data) {
 }
 
 int APS5_VABI scePadResetLightBar(int handle) {
- (void)handle;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+ if (handle != PAD_HANDLE) {
+  return PAD_ERROR_INVALID_HANDLE;
+ }
+ return PAD_OK;
 }
 
 int APS5_VABI scePadResetOrientation(int handle) {
- (void)handle;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+ if (handle != PAD_HANDLE) {
+  return PAD_ERROR_INVALID_HANDLE;
+ }
+ return PAD_OK;
 }
 
 int APS5_VABI scePadSetAngularVelocityDeadbandState(int handle, bool enable) {
- (void)handle;
+ if (handle != PAD_HANDLE) {
+  return PAD_ERROR_INVALID_HANDLE;
+ }
  (void)enable;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+ return PAD_OK;
 }
 
+// The host has no controller output channel yet; rumble, light bar and trigger effects are dropped.
 int APS5_VABI scePadSetLightBar(int handle, const PadLightBarParam* param) {
- (void)handle;
+ if (handle != PAD_HANDLE) {
+  return PAD_ERROR_INVALID_HANDLE;
+ }
  (void)param;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+ return PAD_OK;
 }
 
 int APS5_VABI scePadSetMotionSensorState(int handle, bool enable) {
@@ -142,37 +147,40 @@ int APS5_VABI scePadSetMotionSensorState(int handle, bool enable) {
 }
 
 int APS5_VABI scePadSetTiltCorrectionState(int handle, bool enabled) {
- (void)handle;
+ if (handle != PAD_HANDLE) {
+  return PAD_ERROR_INVALID_HANDLE;
+ }
  (void)enabled;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+ return PAD_OK;
 }
 
 int APS5_VABI scePadSetTriggerEffect(int handle, const void* param) {
- (void)handle;
+ if (handle != PAD_HANDLE) {
+  return PAD_ERROR_INVALID_HANDLE;
+ }
  (void)param;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+ return PAD_OK;
 }
 
 int APS5_VABI scePadSetVibration(int handle, const PadVibrationParam* param) {
- (void)handle;
+ if (handle != PAD_HANDLE) {
+  return PAD_ERROR_INVALID_HANDLE;
+ }
  (void)param;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+ return PAD_OK;
 }
 
 int APS5_VABI scePadSetVibrationMode(int handle, int mode) {
- (void)handle;
+ if (handle != PAD_HANDLE) {
+  return PAD_ERROR_INVALID_HANDLE;
+ }
  (void)mode;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+ return PAD_OK;
 }
 
 int APS5_VABI scePadSetVibrationTriggerEffectWeakWhileEmbeddedMicInUse(bool enabled) {
  (void)enabled;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+ return PAD_OK;
 }
 
 }
