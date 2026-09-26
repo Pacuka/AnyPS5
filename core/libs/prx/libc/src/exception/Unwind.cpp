@@ -4,13 +4,11 @@
 
 #ifdef _WIN32
 #include <windows.h>
-#else
-#include <dlfcn.h>
 #endif
 
 #if defined(__linux__) || defined(_WIN32)
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
 extern "C" _Unwind_Reason_Code __gxx_personality_v0(int, _Unwind_Action, std::uint64_t, _Unwind_Exception*, _Unwind_Context*);
 #endif
 
@@ -25,14 +23,8 @@ bool OwnPersonality(Word personality) {
     }
 #endif
     if (personality == reinterpret_cast<Word>(__gxx_personality_v0_nid_postfix)) return true;
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
     if (personality == reinterpret_cast<Word>(__gxx_personality_v0)) return true;
-#else
-    // Host code throws through the native-named __cxa_throw libc exports, but binds its personality
-    // by version to libstdc++'s. Its frames use the standard LSDA, which this personality reads.
-    static const auto native = reinterpret_cast<Word>(dlsym(RTLD_DEFAULT, "__gxx_personality_v0"));
-    static const auto versioned = reinterpret_cast<Word>(dlvsym(RTLD_DEFAULT, "__gxx_personality_v0", "CXXABI_1.3"));
-    if (personality != 0 && (personality == native || personality == versioned)) return true;
 #endif
     return false;
 }
